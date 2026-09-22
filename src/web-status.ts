@@ -47,6 +47,24 @@ export interface WorkBuddyStatusRouteOptions {
   /** International-card preference selecting larger declared context windows. */
   useMaximumContextWindow?: () => boolean
   /**
+   * Daily check-in status and logs provider.
+   */
+  checkIn?: () => {
+    lastDate: string
+    lastAt: number
+    status: 'claimed' | 'already-claimed' | 'no-campaign' | 'error'
+    amount?: number | undefined
+    message?: string | undefined
+    logs?: readonly {
+      id: string
+      date: string
+      timestamp: number
+      status: 'claimed' | 'already-claimed' | 'no-campaign' | 'error'
+      amount?: number | undefined
+      message?: string | undefined
+    }[] | undefined
+  } | undefined
+  /**
    * Route path to mount. Defaults to the CN variant's path so existing callers
    * and tests keep their behaviour; the international variant passes its own.
    */
@@ -173,6 +191,10 @@ export async function workBuddyWebStatus(
       ...deps.probeKey === undefined ? {} : { probeKey: deps.probeKey },
       ...deps.useMaximumContextWindow === undefined ? {} : { useMaximumContextWindow: deps.useMaximumContextWindow() },
     }
+  const checkInRecord = deps.checkIn?.()
+  const withCheckIn: WorkBuddyWebStatus = checkInRecord === undefined
+    ? probed
+    : { ...probed, checkIn: checkInRecord }
   try {
     const credential = await deps.store.current()
     if (credential !== undefined) {
@@ -180,12 +202,12 @@ export async function workBuddyWebStatus(
       // `unlimited` and `cycleResetTime` ride along as-is: the card must see
       // "no cap" as its own state, and the fetch only sets them when the
       // upstream actually reported them.
-      return { ...probed, credits }
+      return { ...withCheckIn, credits }
     }
   } catch (error: unknown) {
-    return { ...probed, creditsError: safeMessage(error) }
+    return { ...withCheckIn, creditsError: safeMessage(error) }
   }
-  return probed
+  return withCheckIn
 }
 
 /** The status route's request handler, extracted so tests can mount it on a bare server. */

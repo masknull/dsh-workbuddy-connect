@@ -377,6 +377,27 @@ interface WorkBuddyRefreshOutcome {
   expiresInSec?: number;
   domain?: string;
 }
+/** Daily check-in activity status. */
+interface WorkBuddyCheckinStatus {
+  active: boolean;
+  todayCheckedIn: boolean;
+  streakDays: number;
+  dailyCredit: number;
+  todayCredit: number;
+  isStreakDay: boolean;
+  nextStreakDay: number;
+  streakBonusDays: number;
+  streakBonusCredit: number;
+  claimButtonText?: string;
+}
+/** Result of claiming the daily check-in. */
+interface WorkBuddyCheckinClaim {
+  credit: number;
+  streakDays: number;
+  isStreakDay: boolean;
+  alreadyClaimed?: boolean;
+  noCampaign?: boolean;
+}
 /** Chat answer: either a live SSE response or a classified failure. */
 type WorkBuddyChatResult = {
   ok: true;
@@ -528,6 +549,10 @@ declare class WorkBuddyUpstreamClient {
    * response body may describe the account's usage.
    */
   private fetchEnterpriseCredits;
+  /** Query today's check-in status without changing account state. */
+  fetchCheckinStatus(credential: WorkBuddyCredential): Promise<WorkBuddyCheckinStatus>;
+  /** Claim today's check-in reward. */
+  claimDailyCheckin(credential: WorkBuddyCredential): Promise<WorkBuddyCheckinClaim>;
   /**
    * One probe request: a real streaming chat call carrying the effort under
    * test.
@@ -1347,6 +1372,68 @@ declare function createLoginKey(): string;
 /** Mount the POST sign-in route on an optional webServer context. */
 declare function registerWorkBuddyLoginRoute(ctx: Context, deps: WorkBuddyLoginRouteOptions, key: string): void;
 //#endregion
+//#region src/checkin-scheduler.d.ts
+interface VariantCheckInTarget {
+  variantId: string;
+  client: WorkBuddyUpstreamClient;
+  getCredential: () => Promise<WorkBuddyCredential | undefined>;
+  onClaimed?: () => void;
+}
+interface CheckInLogItem {
+  id: string;
+  date: string;
+  timestamp: number;
+  status: 'claimed' | 'already-claimed' | 'no-campaign' | 'error';
+  amount?: number | undefined;
+  message?: string | undefined;
+}
+interface CheckInRecord {
+  lastDate: string;
+  lastAt: number;
+  status: 'claimed' | 'already-claimed' | 'no-campaign' | 'error';
+  amount?: number | undefined;
+  message?: string | undefined;
+  logs?: CheckInLogItem[] | undefined;
+}
+interface CheckInStatusStore {
+  read(variantId: string): CheckInRecord | undefined;
+  write(variantId: string, record: CheckInRecord): void;
+  clearLogs(variantId: string): void;
+}
+declare class JsonFileCheckInStore implements CheckInStatusStore {
+  private readonly filePath;
+  constructor(filePath?: string);
+  private readAll;
+  read(variantId: string): CheckInRecord | undefined;
+  clearLogs(variantId: string): void;
+  write(variantId: string, record: CheckInRecord): void;
+}
+/**
+ * Returns the current date in YYYY-MM-DD standardized on UTC+8 (Beijing Time).
+ */
+declare function getUtc8DateString(nowMs?: number): string;
+/**
+ * Calculates milliseconds until the next 10:00:05 AM in UTC+8.
+ */
+declare function msUntilNext10amUtc8(nowMs?: number): number;
+interface CheckInSchedulerOptions {
+  targets: VariantCheckInTarget[];
+  isEnabled: (variantId: string) => boolean;
+  store?: CheckInStatusStore | undefined;
+}
+declare class CheckInScheduler {
+  private readonly targets;
+  private readonly isEnabled;
+  private readonly store;
+  private timer;
+  private isDisposed;
+  constructor(options: CheckInSchedulerOptions);
+  start(): void;
+  private scheduleNext;
+  executeOnce(): Promise<void>;
+  dispose(): void;
+}
+//#endregion
 //#region src/host-heartbeat.d.ts
 /**
  * Host-side heartbeat: a small JSON file written under `$DSH_HOME` once the
@@ -1466,6 +1553,10 @@ interface Config {
   sidebarQuotaCN?: boolean;
   /** Show the international variant's sidebar quota card. */
   sidebarQuotaAI?: boolean;
+  /** Automatically check in daily for the CN variant. */
+  autoCheckInCN?: boolean;
+  /** Automatically check in daily for the international variant. */
+  autoCheckInAI?: boolean;
   /**
    * Sidebar quota refresh interval in milliseconds. One shared value (both
    * cards poll on it) because the two widgets hit the same rate-limited
@@ -1496,4 +1587,4 @@ declare const Config: z<Config>;
  */
 declare function apply(ctx: Context, config: Config): void;
 //#endregion
-export { AI_VARIANT, type AppVersionInfo, CN_APP_VERSION_FILENAME, CN_VARIANT, type ChatIdentity, Config, FALLBACK_CN_APP_VERSION, FALLBACK_WORKBUDDY_AI_MODELS, FALLBACK_WORKBUDDY_MODELS, LOGIN_PENDING_CODE, PROBE_EFFORT_CANDIDATES, type ProbeAttempt, type ProbeOutcome, type ProbeSender, QUOTA_POLL_DEFAULT_MS, QUOTA_POLL_MIN_MS, type ResolveChatIdentityOptions, type UpstreamErrorKind, WORKBUDDY_AI_LOGIN_PATH, WORKBUDDY_AI_SETTINGS_NS, WORKBUDDY_APP_VERSION_FILENAME, WORKBUDDY_AUTH_FILENAME, WORKBUDDY_CATALOG_FILENAME, WORKBUDDY_CREDENTIAL_SOURCE, WORKBUDDY_DATA_DIR_ENV, WORKBUDDY_DATA_DIR_NAME, WORKBUDDY_HOST_HEARTBEAT_FILENAME, WORKBUDDY_LOGIN_PATH, WORKBUDDY_PROBE_FILENAME, WORKBUDDY_PROVIDER, WORKBUDDY_QUOTA_SETTINGS_NS, WORKBUDDY_SETTINGS_NS, WORKBUDDY_STREAM_IDLE_TIMEOUT_MS, WORKBUDDY_VARIANTS, type WorkBuddyAdapter, type WorkBuddyAppVersionSource, type WorkBuddyAuthStatus, WorkBuddyCatalog, type WorkBuddyCatalogFetch, WorkBuddyCatalogStore, type WorkBuddyChatResult, type WorkBuddyCredential, WorkBuddyCredentialStore, type WorkBuddyCredits, type WorkBuddyEffort, type WorkBuddyHostHeartbeat, type WorkBuddyLoginAccount, type WorkBuddyLoginAttempt, WorkBuddyLoginClient, type WorkBuddyLoginPoll, type WorkBuddyLoginRouteOptions, type WorkBuddyLoginTokens, type WorkBuddyModelBilling, type WorkBuddyModelInfo, type WorkBuddyModelReasoning, type WorkBuddyProbeRecord, WorkBuddyProbeService, type WorkBuddyProbeStatus, WorkBuddyProbeStore, type WorkBuddyProbeValidation, type WorkBuddyPromotion, type WorkBuddyRefreshOutcome, type WorkBuddyShim, WorkBuddyUpstreamClient, type WorkBuddyUpstreamModel, type WorkBuddyVariant, type WorkBuddyWebLoginAction, type WorkBuddyWebLoginRequest, type WorkBuddyWebLoginResult, appUserAgent, apply, chatUserAgent, classifyUpstreamError, clearHostHeartbeat, createLoginKey, createWorkBuddyAdapter, createWorkBuddyShim, fallbackChatIdentity, fingerprintModel, inject, installedAppVersion, isHeartbeatProcessAlive, modelWithCurrentPromotion, name, normalizeCredits, normalizeLoginRegion, parseModelCatalog, parseWorkBuddyAuth, prepareChatBody, prepareInternationalChatBody, probeModel, processStartTimeMs, randomSentinel, readBundleVersion, readCliVersion, readHostHeartbeat, regionOf, registerWorkBuddyLoginRoute, resolveAppVersion, resolveChatIdentity, resolveLoginRegion, validAppVersion, validCliVersion, variantFor, workBuddyLoginHandler, workbuddyCatalogPath, workbuddyHostHeartbeatPath, workbuddyOwnAuthPath, workbuddyPluginDataDir, workbuddyProbePath };
+export { AI_VARIANT, type AppVersionInfo, CN_APP_VERSION_FILENAME, CN_VARIANT, type ChatIdentity, type CheckInLogItem, type CheckInRecord, CheckInScheduler, type CheckInSchedulerOptions, type CheckInStatusStore, Config, FALLBACK_CN_APP_VERSION, FALLBACK_WORKBUDDY_AI_MODELS, FALLBACK_WORKBUDDY_MODELS, JsonFileCheckInStore, LOGIN_PENDING_CODE, PROBE_EFFORT_CANDIDATES, type ProbeAttempt, type ProbeOutcome, type ProbeSender, QUOTA_POLL_DEFAULT_MS, QUOTA_POLL_MIN_MS, type ResolveChatIdentityOptions, type UpstreamErrorKind, type VariantCheckInTarget, WORKBUDDY_AI_LOGIN_PATH, WORKBUDDY_AI_SETTINGS_NS, WORKBUDDY_APP_VERSION_FILENAME, WORKBUDDY_AUTH_FILENAME, WORKBUDDY_CATALOG_FILENAME, WORKBUDDY_CREDENTIAL_SOURCE, WORKBUDDY_DATA_DIR_ENV, WORKBUDDY_DATA_DIR_NAME, WORKBUDDY_HOST_HEARTBEAT_FILENAME, WORKBUDDY_LOGIN_PATH, WORKBUDDY_PROBE_FILENAME, WORKBUDDY_PROVIDER, WORKBUDDY_QUOTA_SETTINGS_NS, WORKBUDDY_SETTINGS_NS, WORKBUDDY_STREAM_IDLE_TIMEOUT_MS, WORKBUDDY_VARIANTS, type WorkBuddyAdapter, type WorkBuddyAppVersionSource, type WorkBuddyAuthStatus, WorkBuddyCatalog, type WorkBuddyCatalogFetch, WorkBuddyCatalogStore, type WorkBuddyChatResult, type WorkBuddyCheckinClaim, type WorkBuddyCheckinStatus, type WorkBuddyCredential, WorkBuddyCredentialStore, type WorkBuddyCredits, type WorkBuddyEffort, type WorkBuddyHostHeartbeat, type WorkBuddyLoginAccount, type WorkBuddyLoginAttempt, WorkBuddyLoginClient, type WorkBuddyLoginPoll, type WorkBuddyLoginRouteOptions, type WorkBuddyLoginTokens, type WorkBuddyModelBilling, type WorkBuddyModelInfo, type WorkBuddyModelReasoning, type WorkBuddyProbeRecord, WorkBuddyProbeService, type WorkBuddyProbeStatus, WorkBuddyProbeStore, type WorkBuddyProbeValidation, type WorkBuddyPromotion, type WorkBuddyRefreshOutcome, type WorkBuddyShim, WorkBuddyUpstreamClient, type WorkBuddyUpstreamModel, type WorkBuddyVariant, type WorkBuddyWebLoginAction, type WorkBuddyWebLoginRequest, type WorkBuddyWebLoginResult, appUserAgent, apply, chatUserAgent, classifyUpstreamError, clearHostHeartbeat, createLoginKey, createWorkBuddyAdapter, createWorkBuddyShim, fallbackChatIdentity, fingerprintModel, getUtc8DateString, inject, installedAppVersion, isHeartbeatProcessAlive, modelWithCurrentPromotion, msUntilNext10amUtc8, name, normalizeCredits, normalizeLoginRegion, parseModelCatalog, parseWorkBuddyAuth, prepareChatBody, prepareInternationalChatBody, probeModel, processStartTimeMs, randomSentinel, readBundleVersion, readCliVersion, readHostHeartbeat, regionOf, registerWorkBuddyLoginRoute, resolveAppVersion, resolveChatIdentity, resolveLoginRegion, validAppVersion, validCliVersion, variantFor, workBuddyLoginHandler, workbuddyCatalogPath, workbuddyHostHeartbeatPath, workbuddyOwnAuthPath, workbuddyPluginDataDir, workbuddyProbePath };

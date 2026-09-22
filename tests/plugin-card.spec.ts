@@ -287,7 +287,7 @@ describe('WorkBuddy plugin card', () => {
     await press(en.tabDetails)
     const rendered = JSON.stringify(view!.toJSON())
     expect(rendered).toContain(en.packageEnterprise)
-    expect(rendered).toContain('0 / 500')
+    expect(rendered).toContain('500 / 500')
   })
 
   it('renders unlimited enterprise quota in details tab', async () => {
@@ -326,4 +326,40 @@ describe('WorkBuddy plugin card', () => {
     // The track renders no fill child, unlike a known percentage.
     expect(bar!.children).toHaveLength(0)
   })
+
+  it('renders check-in logs tab and handles empty and populated logs', async () => {
+    status()
+    statusBody.checkIn = {
+      lastDate: '2026-09-22',
+      lastAt: Date.now(),
+      status: 'claimed',
+      amount: 100,
+      logs: [
+        {
+          id: 'log-1',
+          date: '2026-09-22',
+          timestamp: Date.now(),
+          status: 'claimed',
+          amount: 100,
+        },
+        {
+          id: 'log-2',
+          date: '2026-09-21',
+          timestamp: Date.now() - 86_400_000,
+          status: 'already-claimed',
+        },
+      ],
+    }
+    await mount()
+    await press(en.tabCheckIn)
+    const rendered = JSON.stringify(view!.toJSON())
+    expect(rendered).toContain(en.checkInNow)
+    expect(rendered).toContain(en.checkInRefresh)
+    expect(rendered).toContain(en.checkInClear)
+    expect(rendered).toContain(en.checkInLogTime)
+    expect(rendered).toContain(en.checkInLogResult)
+    expect(rendered).toContain(en.checkInLogAmount)
+    expect(rendered).toContain('+100')
+  })
 })
+

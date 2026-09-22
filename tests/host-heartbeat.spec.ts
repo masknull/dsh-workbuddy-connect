@@ -40,7 +40,7 @@ describe('host heartbeat', () => {
     expect(heartbeat!.pluginVersion).toBe(WORKBUDDY_CONNECT_VERSION)
 
     // The file lives at the expected path.
-    expect(workbuddyHostHeartbeatPath()).toBe(join(root, WORKBUDDY_HOST_HEARTBEAT_FILENAME))
+    expect(workbuddyHostHeartbeatPath()).toBe(join(root, '.dsh-workbuddy-connect', 'state', WORKBUDDY_HOST_HEARTBEAT_FILENAME))
 
     // Live PID is detectable.
     expect(isHeartbeatProcessAlive(heartbeat!)).toBe(true)
@@ -82,17 +82,23 @@ describe('host heartbeat', () => {
   it('treats a malformed heartbeat file as absent', async () => {
     root = await mkdtemp(join(tmpdir(), 'wb-heartbeat-malformed-'))
     vi.stubEnv('DSH_HOME', root)
-    const { writeFile } = await import('node:fs/promises')
-    await writeFile(workbuddyHostHeartbeatPath(), '{ not json', 'utf8')
+    const { mkdir, writeFile } = await import('node:fs/promises')
+    const { dirname } = await import('node:path')
+    const p = workbuddyHostHeartbeatPath()
+    await mkdir(dirname(p), { recursive: true })
+    await writeFile(p, '{ not json', 'utf8')
     expect(await readHostHeartbeat()).toBeUndefined()
   })
 
   it('rejects a heartbeat with the wrong format version', async () => {
     root = await mkdtemp(join(tmpdir(), 'wb-heartbeat-wrongver-'))
     vi.stubEnv('DSH_HOME', root)
-    const { writeFile } = await import('node:fs/promises')
+    const { mkdir, writeFile } = await import('node:fs/promises')
+    const { dirname } = await import('node:path')
+    const p = workbuddyHostHeartbeatPath()
+    await mkdir(dirname(p), { recursive: true })
     await writeFile(
-      workbuddyHostHeartbeatPath(),
+      p,
       JSON.stringify({ version: 99, package: 'dsh-workbuddy-connect', registeredAt: Date.now(), pid: process.pid }),
       'utf8',
     )

@@ -33,6 +33,7 @@ import { createLoginKey } from './login-route.ts'
 import type { WorkBuddyModelInfo } from './catalog.ts'
 import type { WorkBuddyWebCatalog, WorkBuddyWebProbeSection } from './status-paths.ts'
 import { clearHostHeartbeat, writeHostHeartbeat } from './host-heartbeat.ts'
+import { CheckInScheduler, getUtc8DateString, JsonFileCheckInStore } from './checkin-scheduler.ts'
 import { WORKBUDDY_CONNECT_VERSION } from './version.ts'
 import { CN_VARIANT, WORKBUDDY_VARIANTS, type WorkBuddyVariant } from './variants.ts'
 
@@ -141,6 +142,8 @@ export {
   type UpstreamErrorKind,
   type WorkBuddyCatalogFetch,
   type WorkBuddyChatResult,
+  type WorkBuddyCheckinClaim,
+  type WorkBuddyCheckinStatus,
   type WorkBuddyCredits,
   type WorkBuddyEffort,
   type WorkBuddyModelBilling,
@@ -149,6 +152,17 @@ export {
   type WorkBuddyRefreshOutcome,
   type WorkBuddyUpstreamModel,
 } from './upstream.ts'
+export {
+  CheckInScheduler,
+  JsonFileCheckInStore,
+  getUtc8DateString,
+  msUntilNext10amUtc8,
+  type CheckInLogItem,
+  type CheckInRecord,
+  type CheckInStatusStore,
+  type CheckInSchedulerOptions,
+  type VariantCheckInTarget,
+} from './checkin-scheduler.ts'
 export {
   WORKBUDDY_HOST_HEARTBEAT_FILENAME,
   clearHostHeartbeat,
@@ -260,6 +274,10 @@ export interface Config {
   sidebarQuotaCN?: boolean
   /** Show the international variant's sidebar quota card. */
   sidebarQuotaAI?: boolean
+  /** Automatically check in daily for the CN variant. */
+  autoCheckInCN?: boolean
+  /** Automatically check in daily for the international variant. */
+  autoCheckInAI?: boolean
   /**
    * Sidebar quota refresh interval in milliseconds. One shared value (both
    * cards poll on it) because the two widgets hit the same rate-limited
@@ -278,6 +296,10 @@ const MAXIMUM_CONTEXT_WINDOW_FIELD = z.boolean().default(true)
 /** Sidebar quota toggle (one per variant; both live on the shared quota card). */
 const QUOTA_TOGGLE_FIELD = z.boolean().default(false)
   .description('Show this variant\u2019s remaining-credit card in the sidebar footer (off by default)')
+
+/** Daily check-in toggle (one per variant; both live on the shared quota card). */
+const CHECKIN_TOGGLE_FIELD = z.boolean().default(false)
+  .description('Automatically check in at 10:00 (UTC+8) every day (off by default)')
 /**
  * Quota poll interval: default 5 minutes, floor 1 minute. The status route
  * performs a live upstream billing call per request with no cache, so an
@@ -297,6 +319,8 @@ export const Config: z<Config> = z.object({
   useMaximumContextWindow: MAXIMUM_CONTEXT_WINDOW_FIELD,
   sidebarQuotaCN: QUOTA_TOGGLE_FIELD,
   sidebarQuotaAI: QUOTA_TOGGLE_FIELD,
+  autoCheckInCN: CHECKIN_TOGGLE_FIELD,
+  autoCheckInAI: CHECKIN_TOGGLE_FIELD,
   quotaPollMs: QUOTA_POLL_FIELD,
 })
 
@@ -328,6 +352,8 @@ const AI_SECTION: z<Config> = z.object({
 const QUOTA_SECTION: z<Config> = z.object({
   sidebarQuotaCN: QUOTA_TOGGLE_FIELD,
   sidebarQuotaAI: QUOTA_TOGGLE_FIELD,
+  autoCheckInCN: CHECKIN_TOGGLE_FIELD,
+  autoCheckInAI: CHECKIN_TOGGLE_FIELD,
   quotaPollMs: QUOTA_POLL_FIELD,
 })
 
@@ -650,6 +676,25 @@ export function apply(ctx: Context, config: Config): void {
     id => lastIdentities.get(id),
   ))
 
+  const checkInStore = new JsonFileCheckInStore()
+  const checkInScheduler = new CheckInScheduler({
+    targets: runtimes.map(runtime => ({
+      variantId: runtime.variant.id,
+      client: runtime.client,
+      getCredential: async () => runtime.store.resolve().catch(() => undefined),
+      onClaimed: () => {
+        void runtime.store.current().then(cred => cred ? runtime.client.fetchCredits(cred) : undefined).catch(() => undefined)
+      },
+    })),
+    isEnabled: variantId => {
+      const cfg = current()
+      if (variantId === CN_VARIANT.id) return cfg.autoCheckInCN === true
+      return cfg.autoCheckInAI === true
+    },
+    store: checkInStore,
+  })
+  checkInScheduler.start()
+
   // Same-origin routes backing each Plugin-configuration card; the webServer
   // service is optional (a headless profile serves no browser).
   const probeKey = createProbeKey()
@@ -754,6 +799,7 @@ export function apply(ctx: Context, config: Config): void {
         models: () => runtime.catalog.current(),
         catalog: () => catalogSection(runtime),
         probe: () => probeSection(runtime, current().probeConsent === true),
+        checkIn: () => checkInStore.read(runtime.variant.id),
         probeKey,
         loginKey,
         ...runtime.variant.id === CN_VARIANT.id ? {} : { useMaximumContextWindow: () => current().useMaximumContextWindow === true },
@@ -850,6 +896,100 @@ export function apply(ctx: Context, config: Config): void {
           return result
         },
         clear: () => { runtime.probeStore.clear(); runtime.invalidate() },
+        clearCheckInLogs: () => {
+          checkInStore.clearLogs(runtime.variant.id)
+        },
+        checkIn: async () => {
+          if (stopped) return { state: 'failed', reason: 'plugin is stopping' }
+          let credential: WorkBuddyCredential | undefined
+          try {
+            credential = await runtime.store.resolve()
+          } catch (error: unknown) {
+            const message = error instanceof Error ? error.message.slice(0, 300) : String(error)
+            checkInStore.write(runtime.variant.id, {
+              lastDate: getUtc8DateString(),
+              lastAt: Date.now(),
+              status: 'error',
+              message,
+            })
+            return { state: 'failed', reason: message }
+          }
+          if (!credential || !credential.accessToken) {
+            return { state: 'failed', reason: 'not signed in' }
+          }
+          try {
+            const status = await runtime.client.fetchCheckinStatus(credential)
+            if (!status.active) {
+              checkInStore.write(runtime.variant.id, {
+                lastDate: getUtc8DateString(),
+                lastAt: Date.now(),
+                status: 'no-campaign',
+                message: 'Check-in activity is not active',
+              })
+              return { state: 'no-campaign', reason: 'check-in activity is not active' }
+            }
+            if (status.todayCheckedIn) {
+              checkInStore.write(runtime.variant.id, {
+                lastDate: getUtc8DateString(),
+                lastAt: Date.now(),
+                status: 'already-claimed',
+              })
+              return { state: 'already-claimed' }
+            }
+            const claim = await runtime.client.claimDailyCheckin(credential)
+            if (claim.alreadyClaimed) {
+              checkInStore.write(runtime.variant.id, {
+                lastDate: getUtc8DateString(),
+                lastAt: Date.now(),
+                status: 'already-claimed',
+              })
+              return { state: 'already-claimed' }
+            }
+            if (claim.noCampaign) {
+              checkInStore.write(runtime.variant.id, {
+                lastDate: getUtc8DateString(),
+                lastAt: Date.now(),
+                status: 'no-campaign',
+                message: 'Check-in activity is not active',
+              })
+              return { state: 'no-campaign', reason: 'check-in activity is not active' }
+            }
+            checkInStore.write(runtime.variant.id, {
+              lastDate: getUtc8DateString(),
+              lastAt: Date.now(),
+              status: 'claimed',
+              amount: claim.credit,
+            })
+            void runtime.store.current().then(cred => cred ? runtime.client.fetchCredits(cred) : undefined).catch(() => undefined)
+            return { state: 'claimed', amount: claim.credit }
+          } catch (error: unknown) {
+            const message = error instanceof Error ? error.message.slice(0, 300) : String(error)
+            if (message.includes('已签到') || message.includes('今天已签到') || message.includes('already')) {
+              checkInStore.write(runtime.variant.id, {
+                lastDate: getUtc8DateString(),
+                lastAt: Date.now(),
+                status: 'already-claimed',
+              })
+              return { state: 'already-claimed' }
+            }
+            if (message.includes('活动未开启') || message.includes('已过期') || message.includes('not active')) {
+              checkInStore.write(runtime.variant.id, {
+                lastDate: getUtc8DateString(),
+                lastAt: Date.now(),
+                status: 'no-campaign',
+                message: 'Check-in activity is not active',
+              })
+              return { state: 'no-campaign', reason: 'check-in activity is not active' }
+            }
+            checkInStore.write(runtime.variant.id, {
+              lastDate: getUtc8DateString(),
+              lastAt: Date.now(),
+              status: 'error',
+              message,
+            })
+            return { state: 'failed', reason: message }
+          }
+        },
         refresh: async () => {
           if (stopped) return { state: 'failed', reason: 'plugin is stopping' }
           // Re-read the credential first: the user pressed this because the list
@@ -917,6 +1057,8 @@ export function apply(ctx: Context, config: Config): void {
       ...sources.ai().useMaximumContextWindow === undefined ? {} : { useMaximumContextWindow: sources.ai().useMaximumContextWindow },
       ...sources.quota().sidebarQuotaCN === undefined ? {} : { sidebarQuotaCN: sources.quota().sidebarQuotaCN },
       ...sources.quota().sidebarQuotaAI === undefined ? {} : { sidebarQuotaAI: sources.quota().sidebarQuotaAI },
+      ...sources.quota().autoCheckInCN === undefined ? {} : { autoCheckInCN: sources.quota().autoCheckInCN },
+      ...sources.quota().autoCheckInAI === undefined ? {} : { autoCheckInAI: sources.quota().autoCheckInAI },
       ...sources.quota().quotaPollMs === undefined ? {} : { quotaPollMs: sources.quota().quotaPollMs },
     })
     const applyMaximumContextWindow = (next: Config): void => {
@@ -936,7 +1078,9 @@ export function apply(ctx: Context, config: Config): void {
     })
     settingsCtx.settings.installSection(ctx, WORKBUDDY_QUOTA_SETTINGS_NS, QUOTA_SECTION, config, {
       setSource(source) { sources.quota = source as () => Config; current = merged },
-      onChange: () => {},
+      onChange: () => {
+        void checkInScheduler.executeOnce()
+      },
     })
     setMaximumContextWindow = async enabled => {
       await settingsCtx.settings.update(WORKBUDDY_AI_SETTINGS_NS, { useMaximumContextWindow: enabled })
@@ -946,6 +1090,7 @@ export function apply(ctx: Context, config: Config): void {
 
   ctx.effect(() => () => {
     stopped = true
+    checkInScheduler.dispose()
     for (const timer of timers) clearInterval(timer)
     timers.length = 0
     void clearHostHeartbeat()

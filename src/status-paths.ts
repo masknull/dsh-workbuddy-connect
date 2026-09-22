@@ -106,12 +106,14 @@ export interface WorkBuddyProbeAction {
   /**
    * `probe` spends credit on one model; `clear` drops recorded observations;
    * `refresh` re-reads the credential and re-fetches the model catalog;
-   * `set-maximum-context-window` persists the international card preference.
+   * `set-maximum-context-window` persists the international card preference;
+   * `clear-checkin-logs` clears the check-in history;
+   * `checkin` triggers an immediate check-in attempt.
    *
-   * All four are writes, which is why they share this route's in-process key
+   * All are writes, which is why they share this route's in-process key
    * and loopback guards rather than the read-only status GET.
    */
-  action: 'probe' | 'clear' | 'refresh' | 'set-maximum-context-window'
+  action: 'probe' | 'clear' | 'refresh' | 'set-maximum-context-window' | 'clear-checkin-logs' | 'checkin'
   /** Target model id; required for `probe`. */
   model?: string
   /** Requested value for `set-maximum-context-window`. */
@@ -247,6 +249,24 @@ export type WorkBuddyWebStatus =
      * loopback guard); it is never persisted and rotates per process.
      */
     probeKey?: string
+    /**
+     * Daily check-in status record and logs for this variant.
+     */
+    checkIn?: {
+      lastDate: string
+      lastAt: number
+      status: 'claimed' | 'already-claimed' | 'no-campaign' | 'error'
+      amount?: number | undefined
+      message?: string | undefined
+      logs?: readonly {
+        id: string
+        date: string
+        timestamp: number
+        status: 'claimed' | 'already-claimed' | 'no-campaign' | 'error'
+        amount?: number | undefined
+        message?: string | undefined
+      }[] | undefined
+    }
     /**
      * In-process key authorizing sign-in writes, including signing out. Travels
      * with the document for the same reason `probeKey` does.

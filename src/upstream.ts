@@ -154,6 +154,29 @@ export interface WorkBuddyRefreshOutcome {
   domain?: string
 }
 
+/** Daily check-in activity status. */
+export interface WorkBuddyCheckinStatus {
+  active: boolean
+  todayCheckedIn: boolean
+  streakDays: number
+  dailyCredit: number
+  todayCredit: number
+  isStreakDay: boolean
+  nextStreakDay: number
+  streakBonusDays: number
+  streakBonusCredit: number
+  claimButtonText?: string
+}
+
+/** Result of claiming the daily check-in. */
+export interface WorkBuddyCheckinClaim {
+  credit: number
+  streakDays: number
+  isStreakDay: boolean
+  alreadyClaimed?: boolean
+  noCampaign?: boolean
+}
+
 /** Chat answer: either a live SSE response or a classified failure. */
 export type WorkBuddyChatResult =
   | { ok: true; response: Response }
@@ -680,7 +703,11 @@ async function readEnvelope(response: Response): Promise<Envelope> {
   const document = parsed as Record<string, unknown>
   const envelope: Envelope = {
     code: typeof document['code'] === 'number' ? document['code'] : 0,
-    msg: typeof document['msg'] === 'string' ? document['msg'] : '',
+    msg: typeof document['msg'] === 'string'
+      ? document['msg']
+      : typeof document['message'] === 'string'
+        ? document['message']
+        : '',
     data: 'data' in document ? document['data'] : undefined,
     document,
   }
@@ -1072,6 +1099,66 @@ export class WorkBuddyUpstreamClient {
       total: remain,
       accounts: [{ packageName: enterprisePackageName, remain, size: limit }],
       ...resetTime === undefined ? {} : { cycleResetTime: resetTime },
+    }
+  }
+
+  /** Query today's check-in status without changing account state. */
+  async fetchCheckinStatus(credential: WorkBuddyCredential): Promise<WorkBuddyCheckinStatus> {
+    const response = await fetch(`${billingBase(credential)}/v2/billing/meter/checkin-activity-status`, {
+      method: 'POST',
+      headers: billingHeaders(credential),
+      body: '{}',
+      signal: AbortSignal.timeout(JSON_TIMEOUT_MS),
+    })
+    const envelope = await readEnvelope(response)
+    if (!response.ok || envelope.code !== 0) throw envelopeError(response.status, envelope)
+    const data = typeof envelope.data === 'object' && envelope.data !== null
+      ? envelope.data as Record<string, unknown>
+      : {}
+    const numberField = (key: string): number => typeof data[key] === 'number' ? data[key] as number : 0
+    return {
+      active: data['active'] === true,
+      todayCheckedIn: data['today_checked_in'] === true,
+      streakDays: numberField('streak_days'),
+      dailyCredit: numberField('daily_credit'),
+      todayCredit: numberField('today_credit'),
+      isStreakDay: data['is_streak_day'] === true,
+      nextStreakDay: numberField('next_streak_day'),
+      streakBonusDays: numberField('streak_bonus_days'),
+      streakBonusCredit: numberField('streak_bonus_credit'),
+      ...typeof data['claim_button_text'] === 'string' && data['claim_button_text'] !== ''
+        ? { claimButtonText: data['claim_button_text'] as string }
+        : {},
+    }
+  }
+
+  /** Claim today's check-in reward. */
+  async claimDailyCheckin(credential: WorkBuddyCredential): Promise<WorkBuddyCheckinClaim> {
+    const response = await fetch(`${billingBase(credential)}/v2/billing/meter/daily-checkin`, {
+      method: 'POST',
+      headers: billingHeaders(credential),
+      body: '{}',
+      signal: AbortSignal.timeout(JSON_TIMEOUT_MS),
+    })
+    const envelope = await readEnvelope(response)
+    if (!response.ok || envelope.code !== 0) {
+      const msg = envelope.msg || ''
+      if (envelope.code === 10001 || msg.includes('已签到') || msg.includes('今天已签到')) {
+        return { credit: 0, streakDays: 0, isStreakDay: false, alreadyClaimed: true }
+      }
+      if (msg.includes('活动未开启') || msg.includes('已过期') || msg.includes('not active')) {
+        return { credit: 0, streakDays: 0, isStreakDay: false, noCampaign: true }
+      }
+      throw envelopeError(response.status, envelope)
+    }
+    const data = typeof envelope.data === 'object' && envelope.data !== null
+      ? envelope.data as Record<string, unknown>
+      : {}
+    const numberField = (key: string): number => typeof data[key] === 'number' ? data[key] as number : 0
+    return {
+      credit: numberField('credit') || numberField('today_credit') || 100,
+      streakDays: numberField('streak_days'),
+      isStreakDay: data['is_streak_day'] === true,
     }
   }
 

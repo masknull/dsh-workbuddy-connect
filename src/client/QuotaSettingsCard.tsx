@@ -47,6 +47,8 @@ export interface QuotaSettingsCardInjected {
 export interface QuotaSection {
   sidebarQuotaCN?: boolean
   sidebarQuotaAI?: boolean
+  autoCheckInCN?: boolean
+  autoCheckInAI?: boolean
   quotaPollMs?: number
 }
 
@@ -55,7 +57,7 @@ export type QuotaSettingsCardProps =
   & Partial<QuotaSettingsCardInjected>
 
 /** The settings fields this card edits, in display order. */
-const FIELDS = ['sidebarQuotaCN', 'sidebarQuotaAI', 'quotaPollMs'] as const
+const FIELDS = ['sidebarQuotaCN', 'sidebarQuotaAI', 'autoCheckInCN', 'autoCheckInAI', 'quotaPollMs'] as const
 type Field = (typeof FIELDS)[number]
 
 /** The default poll interval shown before a value is stored. */
@@ -67,13 +69,29 @@ const POLL_MIN_MS = 60_000
 interface QuotaSettingsProjection {
   status: 'loading' | 'ready' | 'unavailable'
   writable: boolean
-  values: { sidebarQuotaCN: boolean; sidebarQuotaAI: boolean; quotaPollMs: number }
+  values: {
+    sidebarQuotaCN: boolean
+    sidebarQuotaAI: boolean
+    autoCheckInCN: boolean
+    autoCheckInAI: boolean
+    quotaPollMs: number
+  }
 }
 
 /** Read the section values out of a scope snapshot (defaults when absent). */
 function project(scope: SettingsScope<QuotaSection> | undefined): QuotaSettingsProjection {
   if (scope === undefined) {
-    return { status: 'unavailable', writable: false, values: { sidebarQuotaCN: false, sidebarQuotaAI: false, quotaPollMs: POLL_DEFAULT_MS } }
+    return {
+      status: 'unavailable',
+      writable: false,
+      values: {
+        sidebarQuotaCN: false,
+        sidebarQuotaAI: false,
+        autoCheckInCN: false,
+        autoCheckInAI: false,
+        quotaPollMs: POLL_DEFAULT_MS,
+      },
+    }
   }
   const snapshot = scope.getSnapshot()
   const value = snapshot.value ?? {}
@@ -83,6 +101,8 @@ function project(scope: SettingsScope<QuotaSection> | undefined): QuotaSettingsP
     values: {
       sidebarQuotaCN: value.sidebarQuotaCN === true,
       sidebarQuotaAI: value.sidebarQuotaAI === true,
+      autoCheckInCN: value.autoCheckInCN === true,
+      autoCheckInAI: value.autoCheckInAI === true,
       quotaPollMs: typeof value.quotaPollMs === 'number' ? value.quotaPollMs : POLL_DEFAULT_MS,
     },
   }
@@ -105,7 +125,13 @@ let cachedProjection: QuotaSettingsProjection | undefined
 const UNAVAILABLE: QuotaSettingsProjection = {
   status: 'unavailable',
   writable: false,
-  values: { sidebarQuotaCN: false, sidebarQuotaAI: false, quotaPollMs: POLL_DEFAULT_MS },
+  values: {
+    sidebarQuotaCN: false,
+    sidebarQuotaAI: false,
+    autoCheckInCN: false,
+    autoCheckInAI: false,
+    quotaPollMs: POLL_DEFAULT_MS,
+  },
 }
 
 function stableProject(scope: SettingsScope<QuotaSection> | undefined): QuotaSettingsProjection {
@@ -118,6 +144,8 @@ function stableProject(scope: SettingsScope<QuotaSection> | undefined): QuotaSet
     cachedProjection.writable !== next.writable ||
     cachedProjection.values.sidebarQuotaCN !== next.values.sidebarQuotaCN ||
     cachedProjection.values.sidebarQuotaAI !== next.values.sidebarQuotaAI ||
+    cachedProjection.values.autoCheckInCN !== next.values.autoCheckInCN ||
+    cachedProjection.values.autoCheckInAI !== next.values.autoCheckInAI ||
     cachedProjection.values.quotaPollMs !== next.values.quotaPollMs
   ) {
     cachedScope = scope
@@ -243,12 +271,14 @@ export function QuotaSettingsContent({ t = key => key, scope, signedIn }: QuotaS
     ai: deriveSigned('ai', 'workbuddy-ai'),
   }
   const write = (field: Field, value: boolean | number): void => {
-    // Defense in depth against enabling the sidebar card of an account nobody
+    // Defense in depth against enabling features of an account nobody
     // is signed into: the switch already reads `disabled`, and its handler
     // already returns early — this is the third gate, at the write itself, so
     // no call path (including a direct onToggle(true)) can persist it.
     if (field === 'sidebarQuotaCN' && value === true && !signed.cn) return
     if (field === 'sidebarQuotaAI' && value === true && !signed.ai) return
+    if (field === 'autoCheckInCN' && value === true && !signed.cn) return
+    if (field === 'autoCheckInAI' && value === true && !signed.ai) return
     void scope?.set(field, value)
   }
   const minutes = Math.max(POLL_MIN_MS / 60_000, Math.round(projection.values.quotaPollMs / 60_000))
@@ -269,6 +299,22 @@ export function QuotaSettingsContent({ t = key => key, scope, signedIn }: QuotaS
         disabled={!signed.ai}
         disabledHint={t('quotaSignInRequired')}
         onToggle={next => write('sidebarQuotaAI', next)}
+      />
+      <ToggleRow
+        label={t('quotaAutoCheckInCN')}
+        hint={t('quotaAutoCheckInCNHint')}
+        checked={projection.values.autoCheckInCN}
+        disabled={!signed.cn}
+        disabledHint={t('quotaSignInRequired')}
+        onToggle={next => write('autoCheckInCN', next)}
+      />
+      <ToggleRow
+        label={t('quotaAutoCheckInAI')}
+        hint={t('quotaAutoCheckInAIHint')}
+        checked={projection.values.autoCheckInAI}
+        disabled={!signed.ai}
+        disabledHint={t('quotaSignInRequired')}
+        onToggle={next => write('autoCheckInAI', next)}
       />
       <div style={{ ...rowStyle, borderBottom: 'none', paddingBottom: 0 }}>
         <div style={rowTextStyle}>

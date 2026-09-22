@@ -368,7 +368,7 @@ describe('WorkBuddyPluginCard', () => {
       expect(text).toContain(en.percentUnknown)
       // Before the fix the same row printed "100% remaining" above a full bar,
       // claiming an untouched quota the plugin knows nothing about.
-      expect(text).not.toContain(t('percentRemaining', { percent: formatPercent(100) }))
+      expect(text).not.toContain(t('quotaUsedPercent', { percent: 100 }))
       // The honest detail line is unchanged.
       expect(text).toContain(t('creditPackageUnknownSize', { remain: formatNumber(5) }))
     })
@@ -389,8 +389,8 @@ describe('WorkBuddyPluginCard', () => {
       await openDetails()
 
       const text = rendered()
-      expect(text).toContain(t('percentRemaining', { percent: formatPercent(50) }))
-      expect(text).toContain(t('exactRemaining', { remain: formatNumber(5), size: formatNumber(10) }))
+      expect(text).toContain(t('quotaUsedPercent', { percent: 50 }))
+      expect(text).toContain(t('quotaRemainStats', { remain: formatNumber(5) }))
 
       const known = bars().get('pkg-known')!
       expect(known.props['aria-valuenow']).toBe(50)
