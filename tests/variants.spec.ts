@@ -395,16 +395,16 @@ describe('promotion lifetime', () => {
     // price is not recoverable from the row, so the honest answer is "unknown,
     // refresh": reverting to the cached `x0.50` would state a price that was
     // never the real one, and keeping `free` would advertise the ended offer.
+    // The lapsed rate rides along in `credits` with the promotion's label under
+    // `expiredPromotions`, so the settings card can show what the price WAS —
+    // `rateUnknown` is what stops every other surface from quoting it as current.
     const model = modelWithCurrentPromotion(base, Date.parse('2026-10-01T00:00:00+08:00'))
-    expect(model.billing).toEqual({ free: false, rateUnknown: true })
-    expect(model.billing?.credits).toBeUndefined()
-    expect(model.billing?.badges).toBeUndefined()
+    expect(model.billing).toEqual({ free: false, rateUnknown: true, credits: 'x0.50', expiredPromotions: ['Free now'] })
   })
 
   it('withholds the rate before the window opens', () => {
     const model = modelWithCurrentPromotion(base, Date.parse('2026-01-01T00:00:00+08:00'))
-    expect(model.billing).toEqual({ free: false, rateUnknown: true })
-    expect(model.billing?.credits).toBeUndefined()
+    expect(model.billing).toEqual({ free: false, rateUnknown: true, credits: 'x0.50', expiredPromotions: ['Free now'] })
   })
 
   it('still states a rate for a row that never had a promotion', () => {

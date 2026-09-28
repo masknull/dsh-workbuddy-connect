@@ -2,13 +2,11 @@
  * The shared quota-settings card: one card above the two variant cards that
  * configures both sidebar quota widgets.
  *
- * Like the built-in plugin cards, it registers into `settings.plugin.item`
- * keyed by its own settings namespace (`workbuddy-quota`), binds that
- * namespace through the client settings scope, and writes through the scope's
- * revision-fenced `set` — the same durable-write path every preference row
- * uses. A toggle commits on click: each click is one explicit user choice,
- * and the scope's ordering makes the last one win, so no staged-draft form is
- * needed for two booleans and a number.
+ * It registers into the shared 《插件设置》 block's card list and writes
+ * through the settings scope's revision-fenced `set` — the same durable-write
+ * path every preference row uses. A toggle commits on click: each click is one
+ * explicit user choice, and the scope's ordering makes the last one win, so no
+ * staged-draft form is needed for two booleans and a number.
  *
  * The two toggles gate the CN and international sidebar cards respectively;
  * the interval is one shared poll period. Toggles are disabled while their
@@ -55,7 +53,7 @@ export interface QuotaSection {
 }
 
 export type QuotaSettingsCardProps =
-  PropsRuntime<'settings.plugin.item'>
+  PropsRuntime<'plugin-settings.item'>
   & Partial<QuotaSettingsCardInjected>
 
 /** The settings fields this card edits, in display order. */
@@ -482,13 +480,11 @@ export function QuotaSettingsCard(props: QuotaSettingsCardProps): React.ReactNod
 
   if (projection.status === 'unavailable') return null
   return (
-    // The Plugins tab renders its card list as <ul><li>: the variant cards are
-    // <li>s, and the measured DOM showed this card's <section> sitting in the
-    // same <ul> with NO list-item geometry — which is exactly the misaligned,
-    // framed-out-of-line look the user reported three times. The root element
-    // is an <li> like every sibling, with the variant cards' exact style set
-    // (cardStyle / cardHoverStyle / cardOpenStyle are verbatim copies of
-    // WorkBuddyPluginCard's).
+    // The settings block renders its card list as <ul><li>: every card is an
+    // <li> with the shared card style set (cardStyle / cardHoverStyle /
+    // cardOpenStyle are verbatim copies of WorkBuddyPluginCard's), so this
+    // card sits in the list beside the variant cards without reading as a
+    // different kind of object.
     <li
       style={{ ...cardStyle, ...(hovered ? cardHoverStyle : {}), ...(open ? cardOpenStyle : {}) }}
       onMouseEnter={() => { setHovered(true) }}

@@ -37,7 +37,7 @@ import { WORKBUDDY_CONNECT_VERSION } from './version.ts'
 import { WORKBUDDY_CONFIG_ENTRY_ID } from './config-entry.ts'
 import { CN_VARIANT, WORKBUDDY_VARIANTS, type WorkBuddyVariant } from './variants.ts'
 import { WorkBuddyCheckInService, type WorkBuddyCheckInResult } from './checkin.ts'
-import { SettingsStore, readLegacySections } from './settings-store.ts'
+import { SettingsStore } from './settings-store.ts'
 import {
   CheckInScheduler,
   DEFAULT_CHECK_IN_MINUTE,
@@ -191,13 +191,10 @@ export const WORKBUDDY_SETTINGS_NS = 'workbuddy' as SettingsNamespace
 /**
  * Settings namespace owning the international card's section.
  *
- * One namespace per card, not one shared: the settings Plugins tab dispatches a
- * card by rendering `settings.plugin.item` with `entryKey = ns` for each
- * namespace the Host serves, and skips an entry whose key names no served
- * namespace. With a single installed section, the international card registers
- * into the slot but is never rendered — the card list is built from the Host's
- * sections, not from the slot's entries. Each card therefore needs its own
- * installed section whose namespace equals the card's slot key.
+ * The international variant keeps its own namespace so its section (and the
+ * card reading it) stays separate from the domestic one. The host's
+ * per-namespace card dispatch (the 0.1.5 Plugins tab) is gone; both namespaces
+ * remain served on the plugin's own settings face as section identities.
  */
 export const WORKBUDDY_AI_SETTINGS_NS = 'workbuddy-ai' as SettingsNamespace
 
@@ -207,8 +204,7 @@ export const WORKBUDDY_AI_SETTINGS_NS = 'workbuddy-ai' as SettingsNamespace
  * One card above the two variant cards configures both sidebar quota widgets
  * (CN and international) from a single place, so its toggles cannot live in
  * either variant's section — they are per-variant fields on a cross-variant
- * card. The Plugins tab dispatches by namespace, so this section is what makes
- * that card render (see {@link WORKBUDDY_AI_SETTINGS_NS} for the mechanism).
+ * card.
  */
 export const WORKBUDDY_QUOTA_SETTINGS_NS = 'workbuddy-quota' as SettingsNamespace
 
@@ -982,7 +978,7 @@ interface SettingsFaceTarget {
  * view the host itself reads; `user` is the settings file exactly as stored
  * (presence marks an override). A POST validates the fields it may touch,
  * writes the file, applies the new view in memory, and re-arms the check-in
- * scheduler (the old 0.1.5 section `onChange` behaviour).
+ * scheduler (the section `onChange` behaviour this plugin used to rely on).
  */
 function registerSettingsFace(ctx: Context, deps: SettingsFaceTarget): void {
   const { store, current, apply, rearm } = deps
@@ -1033,37 +1029,15 @@ function registerSettingsFace(ctx: Context, deps: SettingsFaceTarget): void {
  * other key of the row untouched.
  *
  * One-time, right after the settings file has been seeded: the entry returns to
- * its shipped state, so no second source of truth remains. Both write APIs are
- * probed — `configEditor` (0.1.7) first, then the settings service's namespace
- * `replace` (0.1.5), which rebuilds each of this plugin's three sections from
- * the foreign keys alone.
+ * its shipped state, so no second source of truth remains. The write rides
+ * `configEditor` — the profile-patch editor — probed on the plugin context
+ * first and on the settings service's owner context second, because that is
+ * where the host root mounts it.
  *
  * @param ctx - plugin context.
  * @param ownKeys - this plugin's declared config fields.
- * @param namespaces - the 0.1.5 section namespaces this plugin owns.
  */
-/**
- * When the profile tree last recomposed, module-level so every apply sees it.
- *
- * The legacy settings.yaml import writes the profile patch one section at a
- * time for seconds after the Loader settles, emitting this event on every
- * write. Cleaning up our row in that window is futile — the import's next
- * section simply writes it back — so the cleanup waits for the tree to fall
- * quiet first.
- */
-let lastConfigReloadAt = Date.now()
-
-/** Wait until the profile tree has been quiet (the legacy import finished). */
-async function waitForProfileQuiet(): Promise<void> {
-  const deadline = Date.now() + 120_000
-  for (;;) {
-    if (Date.now() - lastConfigReloadAt >= 5_000) return
-    if (Date.now() >= deadline) return
-    await new Promise(resolve => setTimeout(resolve, 1_000))
-  }
-}
-
-async function cleanupEntryConfig(ctx: Context, ownKeys: readonly string[], namespaces: readonly string[]): Promise<void> {
+async function cleanupEntryConfig(ctx: Context, ownKeys: readonly string[]): Promise<void> {
   // RETRIES, deliberately: `configEditor.edit` writes under the profile's
   // package.json lock, and every plugin migrating on the same boot contends for
   // that ONE lock — four sibling plugins seeding at once measured exactly one
@@ -1072,25 +1046,22 @@ async function cleanupEntryConfig(ctx: Context, ownKeys: readonly string[], name
   const attempts = 10
   for (let attempt = 0; attempt < attempts; attempt++) {
     try {
-      // The legacy settings.yaml import writes this same profile patch, one
-      // section at a time, for seconds after the Loader settles — and it holds
-      // the very lock this cleanup needs, and rewrites our row while we watch.
-      // Wait for that write storm to end before the first attempt, then back
-      // off between retries.
-      if (attempt === 0) await waitForProfileQuiet()
-      else await new Promise(resolve => setTimeout(resolve, 2_000 + Math.random() * 1_000))
+      if (attempt > 0) await new Promise(resolve => setTimeout(resolve, 2_000 + Math.random() * 1_000))
       const probe = ctx as unknown as {
         get?: (name: string) => unknown
         fiber?: { entry?: unknown }
       }
-      // configEditor 双路探测：本 ctx 直取（0.1.7 官方写法），失败再从 settings
+      // configEditor 双路探测：本 ctx 直取（官方写法），失败再从 settings
       // 服务的 ownerContext（宿主根 ctx，configEditor 挂在那里）取。
       const own: unknown = typeof probe.get === 'function'
         ? (() => { try { return probe.get.call(ctx, 'configEditor') as unknown } catch { return undefined } })()
         : undefined
       const editor = (own ?? await new Promise<unknown>(resolve => {
         ctx.inject(['settings'], settingsCtx => {
-          const owner = (settingsCtx.settings as { ownerContext?: { get?: (name: string) => unknown } } | undefined)?.ownerContext
+          // `ownerContext` is private on the 0.1.7 SettingsForms class, so it
+          // reaches this probe through the double cast rather than the typed
+          // face — the shape the host's own root context mounts it as.
+          const owner = (settingsCtx.settings as unknown as { ownerContext?: { get?: (name: string) => unknown } } | undefined)?.ownerContext
           const viaOwner = typeof owner?.get === 'function'
             ? (() => { try { return owner.get.call(owner, 'configEditor') as unknown } catch { return undefined } })()
             : undefined
@@ -1113,23 +1084,8 @@ async function cleanupEntryConfig(ctx: Context, ownKeys: readonly string[], name
         })
         return
       }
-      // 0.1.5: rebuild each namespace's user layer empty. Every one of this
-      // plugin's three sections is declared by this plugin alone (its schema IS
-      // the field list), so an empty section is exactly "our keys, nothing else".
-      await new Promise(resolve => {
-        ctx.inject(['settings'], settingsCtx => {
-          const settings = settingsCtx.settings as unknown as {
-            installSection?: unknown
-            replace?: (ns: string, section: Record<string, unknown>) => Promise<unknown>
-          }
-          if (typeof settings?.replace !== 'function' || typeof settings.installSection !== 'function') {
-            resolve(undefined)
-            return
-          }
-          Promise.all(namespaces.map(ns => Promise.resolve(settings.replace!(ns, {})).catch(() => undefined)))
-            .then(() => resolve(undefined))
-        })
-      })
+      // No editor and no entry: nothing this plugin can address, so the row
+      // keeps its values and the seed rule simply never re-seeds them.
       return
     } catch (error: unknown) {
       if (attempt === attempts - 1) {
@@ -1186,80 +1142,54 @@ export function apply(ctx: Context, config: Config): void {
   /**
    * One-time migration: per field — the file never held it → take the entry;
    * the card HAS written this file → keep the file; the entry carries a
-   * NON-DEFAULT value → take the entry (the legacy settings.yaml import lands
-   * only after the Loader settles, i.e. after this plugin's first apply, and a
-   * seed taken inside that window can hold a stale or mis-encoded value); the
-   * entry only carries the schema default → keep the file.
+   * NON-DEFAULT value → take the entry; the entry only carries the schema
+   * default → keep the file.
    *
    * That last clause is load-bearing: a bundle layer's insert config does NOT
    * reach the composition (verified with `dsh --dump-config`), so once the
    * one-time cleanup has emptied the entry row the entry answers pure defaults —
    * treating those as authoritative would erase the user's values on the next
-   * boot. Re-checked on every apply, which is also what closes the legacy
-   * import's timing window.
+   * boot. Re-checked on every apply, which is also what closes the volatile
+   * commit timing window.
    *
    * When the entry is authoritative, its own fields are then deleted from the
    * profile row, so no second source of truth remains.
    */
   const migrateOwnSettings = (): void => {
-    const legacy = readLegacySections([
-      WORKBUDDY_SETTINGS_NS as string,
-      WORKBUDDY_AI_SETTINGS_NS as string,
-      WORKBUDDY_QUOTA_SETTINGS_NS as string,
-    ])
     const seeded: Record<string, unknown> = {}
     for (const key of CONFIG_KEYS) {
       const entryValue = readField(config, key)
-      const legacyValue = legacy === undefined ? undefined : legacy[key]
       const holds = Object.hasOwn(store.user, key)
       if (!holds) {
-        // First seed — the first NON-DEFAULT candidate, entry before legacy, and
-        // only then an explicit default so the stored layer stays complete. A
-        // schema default (an empty array, `true` for a toggle that defaults on)
-        // is NOT a value to seed on: seeding it here is what starved the legacy
-        // layer, whose document is the only surviving copy of this plugin's
-        // 0.1.5 settings.
+        // First seed — the first NON-DEFAULT candidate, and only then an
+        // explicit default so the stored layer stays complete. A schema
+        // default (an empty array, `true` for a toggle that defaults on) is
+        // NOT a value to seed on.
         if (entryValue !== undefined && JSON.stringify(entryValue) !== JSON.stringify(DEFAULT_FOR_FIELD[key])) seeded[key] = entryValue
-        else if (legacyValue !== undefined && JSON.stringify(legacyValue) !== JSON.stringify(DEFAULT_FOR_FIELD[key])) seeded[key] = legacyValue
         else if (entryValue !== undefined) seeded[key] = entryValue
-        else if (legacyValue !== undefined) seeded[key] = legacyValue
         continue
       }
       if (store.edited) continue
       if (entryValue !== undefined && JSON.stringify(entryValue) !== JSON.stringify(DEFAULT_FOR_FIELD[key])) {
         seeded[key] = entryValue
-        continue
-      }
-      if (legacyValue !== undefined && JSON.stringify(legacyValue) !== JSON.stringify(DEFAULT_FOR_FIELD[key])) {
-        seeded[key] = legacyValue
       }
     }
     if (Object.keys(seeded).length === 0) return
     store.patch(seeded)
-    void cleanupEntryConfig(ctx, CONFIG_KEYS, [
-      WORKBUDDY_SETTINGS_NS as string,
-      WORKBUDDY_AI_SETTINGS_NS as string,
-      WORKBUDDY_QUOTA_SETTINGS_NS as string,
-    ])
+    void cleanupEntryConfig(ctx, CONFIG_KEYS)
   }
   migrateOwnSettings()
 
-  // A volatile-only configuration change — which is what the legacy
-  // settings.yaml import performs, because every field of this Config is
+  // A volatile-only configuration change — every field of this Config is
   // `.volatile()` — commits through the loader's volatile fast path: the
   // references are updated IN PLACE and `apply()` is NOT run again. Seeding
   // only inside `apply` would never observe values arriving that way. This
   // event fires on exactly that commit (the same mechanism the built-in
-  // `dsh-llm-pi-ai` uses), so the seed rule re-evaluates.
-  // Both events are Host-internal channels the 0.1.5 typings do not declare, so
-  // they reach `on` through the string-keyed escape hatch rather than the typed
-  // event map.
+  // `dsh-llm-pi-ai` uses), so the seed rule re-evaluates. The event is a
+  // Host-internal channel the typings do not declare, so it reaches `on`
+  // through the string-keyed escape hatch rather than the typed event map.
   const eventSink = ctx as unknown as { on: (event: string, listener: () => void) => void }
   eventSink.on('loader/volatile-update', () => { migrateOwnSettings() })
-  // Every profile recomposition — including each section the legacy import
-  // writes — refreshes this stamp, which is what waitForProfileQuiet reads
-  // before cleaning our row up.
-  eventSink.on('app-boot/config-reload', () => { lastConfigReloadAt = Date.now() })
 
   /** Timers and in-flight work belonging to this plugin instance. */
   let stopped = false
@@ -1370,7 +1300,12 @@ export function apply(ctx: Context, config: Config): void {
     runtime.inflightFetch?.controller.abort()
     runtime.inflightFetch = undefined
     if (hadCredential && known !== identity) {
-      runtime.probeStore.clear()
+      // Drop the PREVIOUS account's observations, never the whole file: the
+      // account taking over keeps its own records — written before a restart,
+      // or seeded while all of this is running. Signing out keeps nothing, so
+      // the departing account's records go with it.
+      if (identity === undefined) runtime.probeStore.clear()
+      else runtime.probeStore.clearOthers(identity)
       runtime.invalidate()
     }
     if (identity === undefined) {
@@ -1605,13 +1540,13 @@ export function apply(ctx: Context, config: Config): void {
   })
 
 
-  // 两条宿主线共用一个写入口：插件自有文件（见 settings-store.ts）。
+  // 插件的配置写入口只有一个：插件自有文件（见 settings-store.ts）。
   //
   // 曾经这里按宿主形态分岔——0.1.5 用 `installSection` + `settings.update`
   // （watch 回调原地生效、毫秒级），0.1.7 用 `configEditor.edit`（每次写入都
   // reconcile 整棵 loader 树 + fiber 热重载，约 1~1.5 秒，并刷新所有客户端
   // 镜像）。现在两侧都不再向宿主编程配置：写落自有 JSON 文件，随后原地
-  // apply（catalog 偏好、签到定时器重排、invalidate），0.1.5/0.1.7 行为一致。
+  // apply（catalog 偏好、签到定时器重排、invalidate）。
   //
   // `configure({auto:false})` 保留：它只关掉宿主为这个 entry 自动生成的表单页
   // （本插件自带卡片），与持久化通路无关。
@@ -1645,10 +1580,9 @@ export function apply(ctx: Context, config: Config): void {
     }
 
     /**
-     * The two setters, now one implementation on both hosts: write the
-     * plugin-owned settings file, then apply the new view in memory. No
-     * profile-patch write means no tree reconcile, no fiber reload, and no
-     * client-mirror storm per toggle.
+     * The setters, one implementation: write the plugin-owned settings file,
+     * then apply the new view in memory. No profile-patch write means no tree
+     * reconcile, no fiber reload, and no client-mirror storm per toggle.
      */
     const write = (patch: Record<string, unknown>): void => {
       // A card-originated write (every caller here is a user action on the

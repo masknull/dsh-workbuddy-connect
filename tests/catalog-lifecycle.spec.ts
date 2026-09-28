@@ -22,7 +22,11 @@ import { FALLBACK_WORKBUDDY_MODELS } from '../src/catalog.ts'
  */
 
 class MemorySettings extends SettingsProvider {
-  readonly writable = true
+  // 0.1.7 declares `writable` as an accessor on SettingsForms; overriding it
+  // with a plain field is a type error, so the stub keeps the same shape.
+  override get writable(): boolean {
+    return true
+  }
   private storedDocument: Record<string, unknown> = {}
 
   protected load(): Promise<Record<string, unknown>> {
@@ -355,10 +359,15 @@ describe('catalog lifecycle', () => {
         body: JSON.stringify(body),
       })
 
-    // A's observation is live on the card before the switch.
+    // A's observation is live on the card before the switch. The credential
+    // sweep adopts A asynchronously, so wait for the card to show A's record
+    // before driving the switch.
     const before = await get('/plugins/dsh-workbuddy-connect/status')
     const key = before.probeKey as string
-    expect(before.probe.results.map((r: { id: string }) => r.id)).toContain('acct-a-model')
+    await vi.waitFor(async () => {
+      const live = await get('/plugins/dsh-workbuddy-connect/status')
+      expect((live.probe.results as { id: string }[]).map(record => record.id)).toContain('acct-a-model')
+    })
     expect(before.catalog.source).toBe('live')
 
     // Switch the account in place, and make the catalog fetch fail.
@@ -374,9 +383,13 @@ describe('catalog lifecycle', () => {
     expect(after.probe.results).toEqual([])
     expect(after.catalog.source).toBe('fallback')
     expect(String(after.catalog.error)).toMatch(/503|upstream/i)
-    const serving = (await ctx.llm.listModels('workbuddy')).map(model => model.id)
-    expect(serving).not.toContain('acct-a-model')
-    expect(serving).toContain('minimax-m3')
+    // The model group follows the store asynchronously (the sweep invalidates
+    // the adapter), so wait for it rather than reading it in the same tick.
+    await vi.waitFor(async () => {
+      const serving = (await ctx.llm.listModels('workbuddy')).map(model => model.id)
+      expect(serving).not.toContain('acct-a-model')
+      expect(serving).toContain('minimax-m3')
+    })
 
     // Recovery: the same manual action once the upstream answers again.
     failCatalog = false

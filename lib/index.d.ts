@@ -965,6 +965,18 @@ declare class WorkBuddyProbeStore {
   set(modelId: string, record: WorkBuddyProbeRecord): void;
   /** Drop every record; used by the card's explicit "clear" action. */
   clear(): void;
+  /**
+   * Drop every record that does NOT belong to the given account.
+   *
+   * The identity-change purge: a previous account's observations must not
+   * answer for the account now in effect, but the account taking over keeps
+   * its own records — written before a restart, or seeded while the host was
+   * running. Clearing the whole file here (as `clear` does) would delete
+   * those too, so the purge is per-account instead. Records with no account
+   * (written before account binding existed) cannot be attributed to anyone,
+   * so they go.
+   */
+  clearOthers(account: string): void;
   /** Every record currently held, for status display. */
   all(): Readonly<Record<string, WorkBuddyProbeRecord>>;
   /** Build a record stamped with this store's clock, version, and account. */
@@ -1451,13 +1463,10 @@ declare const WORKBUDDY_SETTINGS_NS: SettingsNamespace;
 /**
  * Settings namespace owning the international card's section.
  *
- * One namespace per card, not one shared: the settings Plugins tab dispatches a
- * card by rendering `settings.plugin.item` with `entryKey = ns` for each
- * namespace the Host serves, and skips an entry whose key names no served
- * namespace. With a single installed section, the international card registers
- * into the slot but is never rendered — the card list is built from the Host's
- * sections, not from the slot's entries. Each card therefore needs its own
- * installed section whose namespace equals the card's slot key.
+ * The international variant keeps its own namespace so its section (and the
+ * card reading it) stays separate from the domestic one. The host's
+ * per-namespace card dispatch (the 0.1.5 Plugins tab) is gone; both namespaces
+ * remain served on the plugin's own settings face as section identities.
  */
 declare const WORKBUDDY_AI_SETTINGS_NS: SettingsNamespace;
 /**
@@ -1466,8 +1475,7 @@ declare const WORKBUDDY_AI_SETTINGS_NS: SettingsNamespace;
  * One card above the two variant cards configures both sidebar quota widgets
  * (CN and international) from a single place, so its toggles cannot live in
  * either variant's section — they are per-variant fields on a cross-variant
- * card. The Plugins tab dispatches by namespace, so this section is what makes
- * that card render (see {@link WORKBUDDY_AI_SETTINGS_NS} for the mechanism).
+ * card.
  */
 declare const WORKBUDDY_QUOTA_SETTINGS_NS: SettingsNamespace;
 /**

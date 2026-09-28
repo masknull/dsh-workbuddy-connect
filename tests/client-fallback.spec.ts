@@ -23,26 +23,52 @@ describe('client card fallback', () => {
     const spy = vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => { errors.push(args) })
 
     // Simulate a DSH loader that throws on ctx.slots.inject (the rc.7
-    // "requires options.key" error). Loose `any` on purpose: we only test
+    // "requires options.id" error). Loose `any` on purpose: we only test
     // the try/catch boundary, not the DSH client API types.
     const fakeCtx: any = {
       effect: () => {},
       locale: { register: () => () => {}, bind: () => () => '' },
       slots: {
-        inject: () => { throw new Error('keyed slot "settings.plugin.item" requires options.key') },
+        inject: () => { throw new Error('slot "settings.section" requires options.id') },
+        register: () => () => {},
+      },
+      // The real ctx.inject runs the callback once the named services exist;
+      // the fake always runs it, so an unguarded inner throw is real.
+      inject: (_deps: string[], cb: (scope: any) => void) => {
+        cb({ get: () => undefined, slots: fakeCtx.slots })
       },
     }
 
-    // Mirror of src/client/index.tsx apply() body.
+    // Mirror of src/client/index.tsx apply() body, in the real order: the
+    // shared 《插件设置》 block registration and the plugin-manager seat each
+    // carry their own guarded boundary; the composer seat is unguarded, so its
+    // failure lands on the outer catch.
     function apply(ctx: any): void {
       try {
         const namespace = 'settings.workbuddy'
         ctx.effect(() => ctx.locale.register(namespace, { zh: {}, en: {} }), 'dsh-workbuddy-connect: settings copy')
         const t = ctx.locale.bind(namespace)
-        ctx.slots.inject('settings.plugin.item', () => {
-          throw new Error('not reached')
-        })
+
+        // 1. The shared 《插件设置》 block: the container and this plugin's card.
+        try {
+          ctx.slots.inject('settings.section', () => {
+            throw new Error('not reached')
+          })
+        } catch (error: unknown) {
+          console.error('[dsh-workbuddy-connect] plugin settings block registration failed (host provider unaffected):', error)
+        }
+
+        // 2. This bundle's page in the sidebar's Plugins panel: the same card,
+        // registered under the package name, opened expanded there.
+        try {
+          ctx.slots.inject('plugins.bundle.config', () => {
+            throw new Error('not reached')
+          })
+        } catch (error: unknown) {
+          console.error('[dsh-workbuddy-connect] plugin manager page registration failed (host provider unaffected):', error)
+        }
         void t
+
         ctx.inject(['modelDirectories'], (scope: any) => {
           scope.slots.inject('conversation.input.right', () => {
             throw new Error('not reached')
@@ -56,10 +82,13 @@ describe('client card fallback', () => {
     // Must not throw — the whole point of the fallback.
     expect(() => apply(fakeCtx)).not.toThrow()
 
-    // The error is visible in the console for developers.
-    expect(errors).toHaveLength(1)
-    expect(String(errors[0])).toContain('client card failed to load')
-    expect(String(errors[0])).toContain('requires options.key')
+    // Every guarded boundary reported itself, and the unguarded composer seat
+    // landed on the outer catch: the host provider keeps serving models.
+    expect(errors).toHaveLength(3)
+    expect(String(errors[0])).toContain('plugin settings block registration failed')
+    expect(String(errors[1])).toContain('plugin manager page registration failed')
+    expect(String(errors[2])).toContain('client card failed to load')
+    expect(String(errors[2])).toContain('requires options.id')
 
     spy.mockRestore()
   })

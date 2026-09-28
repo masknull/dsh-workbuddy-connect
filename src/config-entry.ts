@@ -16,9 +16,5 @@
  * `ui-conversation` rather than by its package name. Both halves therefore read
  * the id from here, so a profile that renames the entry has exactly one place
  * to follow.
- *
- * DSH 0.1.5 ignores this constant: there, the plugin registers its own settings
- * namespaces (`workbuddy`, `workbuddy-ai`, `workbuddy-quota`) and the browser
- * half binds one of them through `settingsScope`.
  */
 export const WORKBUDDY_CONFIG_ENTRY_ID = 'llm-workbuddy'

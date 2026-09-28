@@ -101,12 +101,13 @@ An import is checked against the target product: offering an international crede
 
 | Plugin | Required DSH core | Desktop app |
 |---|---|---|
-| **0.6.x** | `0.1.5-rc.1` or newer | not required |
+| **0.6.8+** | `0.1.7-rc.1` or newer | not required |
+| **0.6.0 – 0.6.7** | `0.1.5-rc.1` or newer | not required |
 | **0.3.2 – 0.5.x** (international support since `0.5.0`) | `0.1.5-rc.1` or newer | `2.0.7`+ (bundled core `0.1.5-rc.1`) |
 | **0.3.0 – 0.3.1** | `0.1.2-rc.1` | `2.0.5` |
 | **0.2.6** | `0.1.1-rc.2` (older line) | `2.0.3` / `2.0.4` |
 
-- Requires DSH `0.1.5-rc.1` or newer. The `0.3.2` – `0.5.x` entries were governed by the desktop app's bundled core; this release no longer uses the desktop app.
+- Requires DSH `0.1.7-rc.1` or newer (this release supports the 0.1.7 line only; the 0.1.5 compatibility paths are removed). The `0.3.2` – `0.5.x` entries were governed by the desktop app's bundled core; this release no longer uses the desktop app.
 - Installed from GitHub. The repository ships the built `lib/`, so no local build step is needed.
 
 The plugin runs under all three DSH interfaces: **Web**, **Desktop**, and **TUI**. Pick the install command that matches the profile you use.
@@ -138,6 +139,8 @@ Pin a specific release with a tag, e.g. `github:masknull/dsh-workbuddy-connect#v
 > Note: the `dsh-tui` profile requires pnpm 11 to install packages (a different pnpm on PATH fails with `ERR_PNPM_UNEXPECTED_STORE` — use `npx pnpm@11`).
 
 After installing, switch to a WorkBuddy model in the model picker of the interface you chose. On Web and Desktop, the settings card shows the account, token validity, and remaining credit, can refresh the model list manually, and can check eligible models for reasoning levels. **While signed out** it offers **Sign in** (opens the browser and applies the credential when you finish) and **Choose file…** (import an existing `workbuddy.json`); **while signed in** it offers **Switch account** (discards the current credential and starts a fresh sign-in) and **Sign out**. The CN and international versions share one card, switched by its top tab, and sign in independently.
+
+The settings have two identical entrances (one component, one configuration — a save on either surface lands on both): the WorkBuddy card under **Settings → Plugin settings** (collapsed by default), and the **WorkBuddy 连接器** card's detail page in the sidebar's **Plugins** panel (between the description and the component list, expanded by default). On hosts that do not offer the second entrance (older DSH), the first is used alone.
 
 ## CLI
 
@@ -192,7 +195,7 @@ Every file is written atomically (temporary file + rename) — no `.lock`, no le
 ## Known limitations
 
 - **Verified on**: Windows with the DSH Web profile. The real sign-in was exercised for both the CN and international products (each returned a working authorization URL and polled correctly), a `workbuddy.json` was imported, both products read their own account and credit independently, and the settings card was compared property-by-property against the built-in card while collapsed, hovered, and expanded. Other platforms were not re-run for this release.
-- Requires DSH `0.1.5-rc.1`+ and Node 22+; TUI requires the terminal UI package `0.10.0-beta.5` or newer (see the Install section). The credential comes from the plugin's own sign-in, so whether the WorkBuddy desktop app is installed — and where it keeps its state — makes no difference.
+- Requires DSH `0.1.7-rc.1`+ and Node 22+; TUI requires the terminal UI package `0.10.0-beta.5` or newer (see the Install section). The credential comes from the plugin's own sign-in, so whether the WorkBuddy desktop app is installed — and where it keeps its state — makes no difference.
 - **The international version's login is unreachable on some networks**: `www.workbuddy.ai` cannot be reached from parts of mainland China, so an international sign-in fails there and reports why. The CN version is unaffected.
 - **The international version's model catalog comes from the app's own interface**: the service splits it by User-Agent, which is a private implementation detail that a server-side change can break. When that happens the plugin degrades to this account's last successful catalog and then to its built-in roster, showing the source (live / saved / built-in), the fetch time, and the failure reason on the card — but long-term compatibility is not guaranteed. The CN version's catalog uses the same interface as the official CLI and is unaffected.
 - **International catalog User-Agent version**: on Windows / WSL / Linux the international app's version cannot be read, so the saved value or the built-in default is used. This concerns the catalog request only; signing in does not depend on the desktop app.

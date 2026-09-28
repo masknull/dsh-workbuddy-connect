@@ -43,6 +43,14 @@ export interface WorkBuddyPluginCardInjected {
    * (国内版 / 国际版) replacing the two separate cards.
    */
   unified?: boolean
+  /**
+   * Whether the card starts expanded. The shared 《插件设置》 block lists its
+   * cards collapsed; this bundle's page in the sidebar's Plugins panel has
+   * room for the whole configuration, so that registration opens the card at
+   * once. The fold state stays the viewer's afterwards — the two surfaces do
+   * not share it.
+   */
+  defaultOpen?: boolean
 }
 
 /** The browser-visible half of a variant: identity, routes, and copy keys. */
@@ -85,7 +93,7 @@ export const AI_CARD_VARIANT: WorkBuddyCardVariant = {
 export const CARD_VARIANTS: readonly WorkBuddyCardVariant[] = [CN_CARD_VARIANT, AI_CARD_VARIANT]
 /** Props delivered by the Plugin configuration item slot. */
 export type WorkBuddyPluginCardProps =
-  PropsRuntime<'settings.plugin.item'>
+  PropsRuntime<'plugin-settings.item'>
   & Partial<WorkBuddyPluginCardInjected>
 
 const POLL_INTERVAL_MS = 60_000
@@ -1065,7 +1073,7 @@ function CheckInLogTable({
 
 /** Render WorkBuddy sign-in state and credit as one expandable card. */
 export function WorkBuddyPluginCard(props: WorkBuddyPluginCardProps) {
-  const { t, scope, signedIn, variant, unified } = props
+  const { t, scope, signedIn, variant, unified, defaultOpen } = props
   if (t === undefined) throw new Error('WorkBuddy plugin card requires its translation function')
 
   const isUnified = unified === true
@@ -1080,7 +1088,7 @@ export function WorkBuddyPluginCard(props: WorkBuddyPluginCardProps) {
     ? (activeVariantId === 'workbuddy' ? CN_CARD_VARIANT : AI_CARD_VARIANT)
     : (variant ?? CN_CARD_VARIANT)
 
-  const [open, setOpen] = useState(false)
+  const [open, setOpen] = useState(defaultOpen === true)
   /** Whether the pointer is over the card; drives the same border tint the built-in card gets on hover. */
   const [hovered, setHovered] = useState(false)
   /** Keyboard focus on the header, reproducing the built-in's `:focus-visible` ring. */

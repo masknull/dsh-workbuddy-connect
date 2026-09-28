@@ -15,15 +15,14 @@
  * the sidebar cards' polls do not run then.
  */
 
-/* ---- the host configuration seam: one controller shape, two host lines ---- */
+/* ---- the plugin-owned settings seam ---- */
 
 /**
- * Client-side sync state of one settings form.
+ * Client-side sync state of one settings section.
  *
- * Field-for-field the shape both host lines publish: 0.1.5's
- * `SettingsScopeSnapshot` and 0.1.7's `ConfigFormSnapshot` are the same
- * interface under two names (status / value / base / user / revision /
- * writable / mode). Only the three members this card reads are restated here.
+ * Field-for-field the shape the host's settings face publishes over this
+ * plugin's own route (status / value / writable). Only the members the cards
+ * read are restated here.
  */
 export interface SettingsScopeSnapshot<T> {
   status: 'loading' | 'ready' | 'unavailable'
@@ -36,17 +35,10 @@ export interface SettingsScopeSnapshot<T> {
 /**
  * One configuration section's controller, structurally re-stated.
  *
- * DSH 0.1.5 hands it out as `ctx.settingsScope.bind({ namespace })` (a
- * namespace the plugin's own host half registered), 0.1.7 as
- * `ctx.configForms.get(entryId)` (the profile entry id that owns the Config
- * schema). Both expose the same snapshot/subscribe/set contract, so ONE
- * structural type keeps every caller branch-free — and, unlike a type-only
- * import of the host class, it cannot become unavailable on the line whose
- * package no longer ships it (the 0.1.7 removal of `SettingsScope`).
- *
- * This is a type-only restatement: the bundle never imports a host value, and
- * `set` is widened to `Promise<unknown>` because 0.1.5 resolves `void` while
- * 0.1.7 resolves `boolean` — this card awaits neither.
+ * The browser half reaches this through the plugin's own settings face
+ * (`./http-settings-scope.ts`), which speaks the same
+ * snapshot/subscribe/set contract over the plugin's own JSON file — so a type
+ * restatement keeps the cards branch-free without importing any host value.
  */
 export interface SettingsScope<T> {
   /** @returns the current sync snapshot (stable reference until the next change). */
@@ -55,12 +47,6 @@ export interface SettingsScope<T> {
   subscribe(listener: () => void): () => void
   /** Queue one field write, in the section's own field names. */
   set(field: string, value: unknown): Promise<unknown>
-}
-
-/** The host seam the adapter reaches through: at most one member exists per host. */
-interface SettingsScopeHost<T> {
-  settingsScope?: { bind(spec: { namespace: string }): SettingsScope<T> } | undefined
-  configForms?: { get(entryId: string): SettingsScope<T> } | undefined
 }
 
 /** Whether each variant is signed in, as far as the last status poll knows. */

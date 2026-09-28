@@ -21,12 +21,15 @@ import { QuotaDashboard, SidebarQuotaCard } from './SidebarQuotaCard.tsx'
 import type { QuotaDashboardInjected, QuotaDashboardState, QuotaDashboardProps, QuotaCopyKey, SidebarQuotaCardInjected, SidebarQuotaCardProps } from './SidebarQuotaCard.tsx'
 import { injectQuotaCss } from './quota-styles.ts'
 import './quota-slots.ts'
+// Side-effect type import: this module carries the `plugins.bundle.config`
+// SlotMap contract — the plugin manager's bundle-configuration seat, declared
+// by a Host built-in this bundle does not depend on (see plugin-manager-slots.ts).
+import './plugin-manager-slots.ts'
 import { setQuotaPollMs, setQuotaToggles, quotaSignInState, quotaPollMs, noteQuotaStatus, quotaStatusIsFresh, variantOfStatusPath } from './quota-settings-store.ts'
 import type { SettingsScope } from './quota-settings-store.ts'
 import { isWorkBuddyWebStatus } from './status-document.ts'
 import { en, zh } from './locales.ts'
 import type { WorkBuddySettingsKey } from './locales.ts'
-import { WORKBUDDY_CONFIG_ENTRY_ID } from '../config-entry.ts'
 import { WORKBUDDY_AI_STATUS_PATH, WORKBUDDY_STATUS_PATH } from '../status-paths.ts'
 import type { WorkBuddyWebStatus } from '../status-paths.ts'
 
@@ -41,7 +44,9 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
   }
 }
 
-/** Stable browser-plugin name. */
+/**
+ * Stable browser-plugin name.
+ */
 export const name = 'dsh-workbuddy-connect-client'
 /**
  * Client services required by the Plugin configuration contribution.
@@ -50,18 +55,15 @@ export const name = 'dsh-workbuddy-connect-client'
  * hold the browser `ClientContext` alias and the `slots` service). The services
  * this card relies on now come from narrower packages: the `slots` registry
  * moved to `@deepseek-ai/dsh-client-ui-renderer`, `locale` stayed in
- * `@deepseek-ai/dsh-client-locale`, and the `settings.plugin.item` slot is
- * declared by `@deepseek-ai/dsh-client-ui-settings-plugins`. All three are
- * named in the package's `dsh.client.inject` list, so cordis has activated
- * them before this plugin's fiber starts.
+ * `@deepseek-ai/dsh-client-locale`. Both are named in the package's
+ * `dsh.client.inject` list, so cordis has activated them before this plugin's
+ * fiber starts.
  *
- * The CONFIGURATION service is deliberately NOT here. DSH 0.1.5 provided
- * `settingsScope` and 0.1.7 removed it, so naming it statically left this whole
- * client plugin pending forever on 0.1.7 ("waiting for service:
- * settingsScope") — no card, no sidebar quota card, no dashboard. Both lines'
- * configuration services are reached through `ctx.inject([...], cb)` service
- * callbacks inside `apply()` instead: a callback whose service never appears
- * simply never runs, while the plugin itself activates normally.
+ * The CONFIGURATION service is deliberately NOT here either: configuration
+ * reads and writes ride this plugin's own settings face (an HTTP route served
+ * by the host half over the plugin's own file), so no host configuration
+ * service — 0.1.5's `settingsScope`, removed in 0.1.7, or 0.1.7's `configForms`
+ * — is a static dependency of this bundle at all.
  */
 // `modelDirectories` reads the active session through `remote.session`.
 // Declaring that dependency at the client entry is required by the Desktop
@@ -79,20 +81,6 @@ export const inject = ['slots', 'locale', 'remote', 'remote.session']
 const PACKAGE_NAME = 'dsh-workbuddy-connect'
 
 /**
- * The settings namespace the 0.1.5 configuration face is bound BY.
- *
- * Two different keys reach the same section, one per host line, and they must
- * not be mixed up:
- *  - 0.1.5 binds a scope by NAMESPACE (`settingsScope.bind({ namespace })`),
- *    and this is the Host half's own `workbuddy-quota` namespace (its
- *    `WORKBUDDY_QUOTA_SETTINGS_NS`), registered by `installSection`;
- *  - 0.1.7 addresses the profile ENTRY that owns the Config schema
- *    (`configForms.get(entryId)` — see `WORKBUDDY_CONFIG_ENTRY_ID`), where a
- *    settings namespace no longer exists at all.
- */
-const QUOTA_SETTINGS_NAMESPACE = 'workbuddy-quota'
-
-/**
  * The shared 《插件设置》 container the three connect plugins agree on: slot
  * `settings.section`, entry id `plugin-settings`, child slot
  * `plugin-settings.item`. The id and the child slot name must stay identical
@@ -101,6 +89,21 @@ const QUOTA_SETTINGS_NAMESPACE = 'workbuddy-quota'
  */
 const PLUGIN_SETTINGS_SECTION_ID = 'plugin-settings'
 const PLUGIN_SETTINGS_ITEM_SLOT = 'plugin-settings.item'
+
+/**
+ * The plugin manager's bundle-configuration seat, and this bundle's key in it.
+ *
+ * The sidebar's Plugins panel (the `plugins` main panel the Host's plugin
+ * manager registers) renders one bundle's own configuration on the bundle's
+ * detail page — between the description and the component rows — through the
+ * `plugins.bundle.config` keyed slot. The key must spell this package's name
+ * exactly: it is the same key the page's configuration ledger reads to decide
+ * whether the configuration section shows at all. The slot itself is declared
+ * by the Host (see `plugin-manager-slots.ts` for the structural restatement),
+ * so registering before that declaration exists is a no-op by construction —
+ * `ctx.slots.inject` defers the factory until the seat is committed.
+ */
+const PLUGIN_MANAGER_SLOT = 'plugins.bundle.config'
 
 /**
  * The container component of the shared 《插件设置》 block.
@@ -134,10 +137,9 @@ const VARIANT_STATUS: Record<string, string> = {
  * the `workbuddy` model channel is unaffected, and `dsh-workbuddy-connect
  * status` reports host health via the heartbeat file.
  *
- * Card ORDER: the Plugins tab dispatches `settings.plugin.item` in
- * priority-ascending order, so the unified card keeps the seat the shared
- * quota-settings card held (10) and takes the place of the two variant cards
- * that used to follow it: WorkBuddy (10), then the sibling plugins' bands.
+ * Card ORDER: the shared block dispatches its `list` entries by `order`
+ * ascending, so the unified card keeps the seat the shared quota-settings card
+ * held: session-prompt 10 / workbuddy 20 / qoder 30 — this card is 20.
  *
  * NOTE: the try/catch boundary of this function is mirrored (duplicated) in
  * `tests/client-fallback.spec.ts`, because the real client entry imports
@@ -180,46 +182,69 @@ export function apply(ctx: ClientContext): void {
       scope.subscribe(applySnapshot)
     }
 
-    // 2. The configuration face, one branch per host line. Both are service
-    // CALLBACKS — never a static injection, and never a bare property probe:
-    //  - a static `inject` entry naming a service the host does not provide
-    //    leaves this whole client plugin pending forever (0.1.7 removed
-    //    `settingsScope`, which is exactly the "waiting for service" hang);
-    //  - package-level `dsh.client.inject` edges are loading/prefetch metadata,
-    //    never apply sequencing, so probing `ctx.settingsScope` /
-    //    `ctx.configForms` at apply time can run before the provider registered
-    //    its service and misread the host as having no configuration surface.
-    // A callback whose service never appears simply never runs, so the two
-    // branches are mutually exclusive (0.1.5 provides `settingsScope`, 0.1.7
-    // `configForms`) and each owns the card seat its own host can render.
-    // 插件自有配置（`<profile>/.dsh-workbuddy-connect/settings.json`）：两条宿主
-    // 线的读写都走宿主半的 settings face，不再经过 settingsScope /
-    // configForms。0.1.7 的 configForms 写入会整树 reconcile + fiber 热重载
-    // （每次约 1~1.5 秒，且每次保存都刷新所有客户端镜像）；自有文件写入是本地
-    // 毫秒级原子写。scope 启动即载入，卡片注册无条件进行。
+    // 2. 插件自有配置（`<profile>/.dsh-workbuddy-connect/settings.json`）：
+    // 读写都走宿主半的 settings face，不经过任何宿主配置服务。scope 启动即
+    // 载入，卡片注册无条件进行。
     const ownQuotaScope = new OwnQuotaSettingsScope()
     void ownQuotaScope.load().catch(() => {})
     adoptQuotaScope(ownQuotaScope as never)
+
+    /**
+     * The unified card's inject face, shared by every surface that mounts it:
+     * the shared 《插件设置》 block and this bundle's page in the sidebar's
+     * Plugins panel. One factory keeps both of them reading the same live
+     * values — the same scope, the same sign-in fact, the same `unified`
+     * layout — so a save on either surface is a save for both, exactly as the
+     * reference implementation does it.
+     *
+     * `defaultOpen` is the one per-surface difference: the Plugins-panel page
+     * has room for the whole configuration, so that registration opens the
+     * card at once; the settings block lists it collapsed. The fold state
+     * stays the viewer's afterwards — the two surfaces do not share it.
+     */
+    const unifiedCardInject = (defaultOpen = false): WorkBuddyPluginCardInjected => ({
+      t,
+      scope: quotaScope,
+      // Read live at render: the sign-in state changes without a remount.
+      signedIn: () => quotaSignInState(),
+      unified: true,
+      defaultOpen,
+    })
     try {
       registerPluginSettings()
     } catch (error: unknown) {
       console.error('[dsh-workbuddy-connect] plugin settings block registration failed (host provider unaffected):', error)
     }
-    try {
-      ctx.slots.inject('settings.plugin.item', () => ctx.slots.register({
-        name: 'settings.plugin.item',
-        key: 'workbuddy',
-        priority: 10,
-        inject: (): WorkBuddyPluginCardInjected => ({
-          t,
-          scope: quotaScope,
-          // Read live at render: the sign-in state changes without a remount.
-          signedIn: () => quotaSignInState(),
-          unified: true,
-        }),
+
+    /**
+     * Register the same unified card on this bundle's page in the sidebar's
+     * Plugins panel, beside its enable switch and component rows.
+     *
+     * `ctx.slots.inject` defers the factory until the Host's plugin manager
+     * declares the seat (its `main` registration commits the child table), so
+     * a deployment that ships no plugin manager — or loads it after this
+     * bundle — never throws: the callback simply never runs, and the shared
+     * 《插件设置》 block stays the single surface, exactly as before. The keyed
+     * key is this package's name, the same key the page's configuration ledger
+     * reads to decide whether the configuration section shows.
+     *
+     * Its own boundary mirrors the dashboard and footer-card ones: a slot-API
+     * breaking change degrades to a console.error instead of taking the
+     * settings block or the model channel with it.
+     */
+    function joinPluginManagerBlock(): void {
+      ctx.slots.inject(PLUGIN_MANAGER_SLOT, () => ctx.slots.register({
+        name: PLUGIN_MANAGER_SLOT,
+        key: PACKAGE_NAME,
+        // The bundle's page in the Plugins panel has room for the whole
+        // configuration, so the card opens expanded there.
+        inject: () => unifiedCardInject(true),
       }, WorkBuddyPluginCard))
+    }
+    try {
+      joinPluginManagerBlock()
     } catch (error: unknown) {
-      console.error('[dsh-workbuddy-connect] plugin card registration failed (host provider unaffected):', error)
+      console.error('[dsh-workbuddy-connect] plugin manager page registration failed (host provider unaffected):', error)
     }
 
     /**
@@ -246,12 +271,10 @@ export function apply(ctx: ClientContext): void {
         // 《插件设置》卡片统一排位（列表按 order 升序渲染）：
         // session-prompt 10 / workbuddy 20 / qoder 30。
         order: 20,
-        inject: (): WorkBuddyPluginCardInjected => ({
-          t,
-          scope: quotaScope,
-          signedIn: () => quotaSignInState(),
-          unified: true,
-        }),
+        // The shared block lists its cards collapsed (the factory's
+        // `defaultOpen` default); the Plugins-panel registration above opens
+        // the same card. One face, two surfaces.
+        inject: unifiedCardInject,
       }, WorkBuddyPluginCard)
       // The callback returns its disposers: `slots.inject` owns them for the
       // declaration's lifetime, so the container and this plugin's card are

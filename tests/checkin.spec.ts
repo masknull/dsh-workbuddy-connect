@@ -60,7 +60,9 @@ describe('WorkBuddyCheckInService', () => {
     expect(capturedHeaders?.['Authorization']).toBe('Bearer test-cn-token')
     expect(capturedHeaders?.['Origin']).toBe('https://www.workbuddy.cn')
     expect(capturedHeaders?.['Referer']).toBe('https://www.workbuddy.cn/profile/growth-center')
-    expect(capturedHeaders?.['User-Agent']).toContain('Mozilla/5.0')
+    // The same client UA the login and catalog paths send (the official
+    // client's own token), never an invented browser one.
+    expect(capturedHeaders?.['User-Agent']).toBe('CLI/2.63.2 CodeBuddy/2.63.2')
   })
 
   it('detects already-claimed when HTTP 400 and code 10001', async () => {

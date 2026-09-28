@@ -235,6 +235,29 @@ export class WorkBuddyProbeStore {
     this.persist()
   }
 
+  /**
+   * Drop every record that does NOT belong to the given account.
+   *
+   * The identity-change purge: a previous account's observations must not
+   * answer for the account now in effect, but the account taking over keeps
+   * its own records — written before a restart, or seeded while the host was
+   * running. Clearing the whole file here (as `clear` does) would delete
+   * those too, so the purge is per-account instead. Records with no account
+   * (written before account binding existed) cannot be attributed to anyone,
+   * so they go.
+   */
+  clearOthers(account: string): void {
+    const records = this.load()
+    let dropped = false
+    for (const [id, record] of Object.entries(records)) {
+      if (record.account !== account) {
+        delete records[id]
+        dropped = true
+      }
+    }
+    if (dropped) this.persist()
+  }
+
   /** Every record currently held, for status display. */
   all(): Readonly<Record<string, WorkBuddyProbeRecord>> {
     return { ...this.load() }
