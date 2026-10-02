@@ -48,6 +48,20 @@ import {
 export { WORKBUDDY_PROVIDER, WORKBUDDY_STREAM_IDLE_TIMEOUT_MS, createWorkBuddyAdapter, type WorkBuddyAdapter } from './adapter.ts'
 export { createWorkBuddyShim, type WorkBuddyShim } from './shim.ts'
 export {
+  UsageLedger,
+  createUsageTap,
+  localDay,
+  modelOf,
+  recordFrom,
+  scanSse,
+  sumRecords,
+  type LedgerRegion,
+  type UsageDay,
+  type UsageRecord,
+  type UsageTap,
+  type UsageTotals,
+} from './usage-ledger.ts'
+export {
   FALLBACK_WORKBUDDY_AI_MODELS,
   FALLBACK_WORKBUDDY_MODELS,
   WorkBuddyCatalog,
