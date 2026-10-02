@@ -129,6 +129,17 @@ export {
   type WorkBuddyAuthStatus,
   type WorkBuddyCredential,
 } from './auth.ts'
+import { workbuddyStateDir } from './paths.ts'
+import { dirname, join } from 'node:path'
+import {
+  registerWorkBuddyUsageRoutes,
+} from './usage-route.ts'
+import { UsageLedger } from './usage-ledger.ts'
+
+/** The directory the usage ledger files live in: `<data dir>/usage/`. */
+function usageDir(): string {
+  return join(dirname(workbuddyStateDir()), 'usage')
+}
 export {
   LOGIN_PENDING_CODE,
   normalizeLoginRegion,
@@ -786,7 +797,13 @@ function probeSection(runtime: VariantRuntime, consent: boolean): WorkBuddyWebPr
  */
 async function startVariant(ctx: Context, runtime: VariantRuntime, seedCatalog: () => Promise<void>): Promise<boolean> {
   const { variant, store, client, catalog, probeService } = runtime
-  const shim = createWorkBuddyShim({ store, client, catalog, logger: ctx.logger })
+  // Per-request usage ledger. Recording happens inside the shim, at the only
+  // point where the upstream's billed `credit` and the exact token split are
+  // both visible (pi-ai normalises usage and drops `credit`).
+  const ledger = usageLedgerFor(usageDir(), (error: unknown) => {
+    ctx.logger?.warn('dsh-workbuddy-connect: usage ledger write failed', error)
+  })
+  const shim = createWorkBuddyShim({ store, client, catalog, ledger, region: variant.region, logger: ctx.logger })
   try {
     await shim.ready
   } catch (error: unknown) {
@@ -909,10 +926,28 @@ async function startVariant(ctx: Context, runtime: VariantRuntime, seedCatalog: 
  */
 
 /** The in-process control keys, minted once per process. */
-let processKeys: { probe: string; login: string } | undefined
-function controlKeys(): { probe: string; login: string } {
-  processKeys ??= { probe: createProbeKey(), login: createLoginKey() }
+let processKeys: { probe: string; login: string; usage: string } | undefined
+function controlKeys(): { probe: string; login: string; usage: string } {
+  processKeys ??= { probe: createProbeKey(), login: createLoginKey(), usage: createLoginKey() }
   return processKeys
+}
+
+/**
+ * The usage ledger, one per data directory for the whole process.
+ *
+ * Both variants append to the *same* ledger: a record already carries its own
+ * `region`, and splitting the file per variant would make "what did I spend
+ * today" a two-file join for no benefit. Keyed by directory so a profile with
+ * two plugin instances cannot open two writers on one file.
+ */
+const usageLedgers = new Map<string, UsageLedger>()
+function usageLedgerFor(dir: string, onError: (error: unknown) => void): UsageLedger {
+  let ledger = usageLedgers.get(dir)
+  if (ledger === undefined) {
+    ledger = new UsageLedger({ dir, onError })
+    usageLedgers.set(dir, ledger)
+  }
+  return ledger
 }
 
 /** The account identity each variant last published a catalog for, across reloads. */
@@ -1260,7 +1295,7 @@ export function apply(ctx: Context, config: Config): void {
   // service is optional (a headless profile serves no browser).
   // Keys are per-process (see {@link controlKeys}): a 0.1.7 settings write
   // reloads this fiber, and per-apply keys would invalidate every card's key.
-  const { probe: probeKey, login: loginKey } = controlKeys()
+  const { probe: probeKey, login: loginKey, usage: usageKey } = controlKeys()
   /** The device-authorization client; one instance serves both realms. */
   const loginClient = new WorkBuddyLoginClient()
   /**
@@ -1359,6 +1394,15 @@ export function apply(ctx: Context, config: Config): void {
   }
 
   ctx.inject(['webServer'], webCtx => {
+    // One usage pair for the whole plugin: the ledger is shared across variants
+    // and every record carries its own region, so a per-variant route would only
+    // duplicate the same numbers.
+    registerWorkBuddyUsageRoutes(webCtx, {
+      ledger: usageLedgerFor(usageDir(), (error: unknown) => {
+        webCtx.logger?.warn('dsh-workbuddy-connect: usage ledger write failed', error)
+      }),
+      key: usageKey,
+    })
     for (const runtime of runtimes) {
       registerWorkBuddyStatusRoute(webCtx, {
         path: runtime.variant.statusPath,

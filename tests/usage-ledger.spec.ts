@@ -205,10 +205,20 @@ describe('modelOf', () => {
 
 describe('UsageLedger', () => {
   let dir: string
+  /** Every ledger built in a test, so cleanup can drain its write queue first. */
+  const built: UsageLedger[] = []
+  const track = (ledger: UsageLedger): UsageLedger => {
+    built.push(ledger)
+    return ledger
+  }
   beforeEach(async () => {
+    built.length = 0
     dir = await mkdtemp(join(tmpdir(), 'usage-ledger-'))
   })
   afterEach(async () => {
+    // A queued append holds a handle on the directory; removing it underneath
+    // the queue fails with EBUSY on Windows.
+    await Promise.all(built.map((ledger) => ledger.idle()))
     await rm(dir, { recursive: true, force: true })
   })
 
@@ -218,7 +228,7 @@ describe('UsageLedger', () => {
   })
 
   it('appends and reads back', async () => {
-    const ledger = new UsageLedger({ dir })
+    const ledger = track(new UsageLedger({ dir }))
     await ledger.append(rec('2026-10-02T01:00:00.000Z', 1.5))
     await ledger.append(rec('2026-10-02T02:00:00.000Z', 2.5))
     const all = await ledger.read()
@@ -228,20 +238,20 @@ describe('UsageLedger', () => {
 
   it('creates the directory on first write', async () => {
     const nested = join(dir, 'deep', 'state')
-    const ledger = new UsageLedger({ dir: nested })
+    const ledger = track(new UsageLedger({ dir: nested }))
     await ledger.append(rec('2026-10-02T01:00:00.000Z'))
     expect(await ledger.read()).toHaveLength(1)
   })
 
   it('reads an absent ledger as empty', async () => {
-    const ledger = new UsageLedger({ dir })
+    const ledger = track(new UsageLedger({ dir }))
     expect(await ledger.read()).toEqual([])
     expect(await ledger.daily()).toEqual([])
     expect(await ledger.size()).toBe(0)
   })
 
   it('keeps concurrent writes from interleaving (one line each)', async () => {
-    const ledger = new UsageLedger({ dir })
+    const ledger = track(new UsageLedger({ dir }))
     await Promise.all(Array.from({ length: 50 }, (_, i) => ledger.append(rec(`2026-10-02T01:00:${String(i).padStart(2, '0')}.000Z`, i + 1))))
     const raw = await readFile(ledger.path, 'utf8')
     const lines = raw.split('\n').filter((l) => l.trim() !== '')
@@ -251,7 +261,7 @@ describe('UsageLedger', () => {
   })
 
   it('skips torn lines instead of failing the read', async () => {
-    const ledger = new UsageLedger({ dir })
+    const ledger = track(new UsageLedger({ dir }))
     await ledger.append(rec('2026-10-02T01:00:00.000Z'))
     await writeFile(ledger.path, (await readFile(ledger.path, 'utf8')) + '{"at":"broken"\n', 'utf8')
     expect(await ledger.read()).toHaveLength(1)
@@ -262,13 +272,13 @@ describe('UsageLedger', () => {
     // A path that cannot be a directory: writing under an existing file fails.
     const blocker = join(dir, 'blocker')
     await writeFile(blocker, 'x', 'utf8')
-    const ledger = new UsageLedger({ dir: join(blocker, 'nested'), onError })
+    const ledger = track(new UsageLedger({ dir: join(blocker, 'nested'), onError }))
     await expect(ledger.append(rec('2026-10-02T01:00:00.000Z'))).resolves.toBeUndefined()
     expect(onError).toHaveBeenCalled()
   })
 
   it('groups per day and sorts ascending', async () => {
-    const ledger = new UsageLedger({ dir })
+    const ledger = track(new UsageLedger({ dir }))
     const day1a = new Date(2026, 9, 1, 10, 0, 0).toISOString()
     const day1b = new Date(2026, 9, 1, 18, 0, 0).toISOString()
     const day2 = new Date(2026, 9, 2, 9, 0, 0).toISOString()
@@ -282,7 +292,7 @@ describe('UsageLedger', () => {
   })
 
   it('filters by an inclusive local-day range', async () => {
-    const ledger = new UsageLedger({ dir })
+    const ledger = track(new UsageLedger({ dir }))
     await ledger.append(rec(new Date(2026, 9, 1, 12).toISOString(), 1))
     await ledger.append(rec(new Date(2026, 9, 2, 12).toISOString(), 2))
     await ledger.append(rec(new Date(2026, 9, 3, 12).toISOString(), 4))
@@ -293,7 +303,7 @@ describe('UsageLedger', () => {
   })
 
   it('compacts a range into a rollup without purging by default', async () => {
-    const ledger = new UsageLedger({ dir })
+    const ledger = track(new UsageLedger({ dir }))
     await ledger.append(rec(new Date(2026, 9, 1, 12).toISOString(), 1))
     await ledger.append(rec(new Date(2026, 9, 2, 12).toISOString(), 2))
     const result = await ledger.compact('2026-10-01', '2026-10-01', false)
@@ -304,7 +314,7 @@ describe('UsageLedger', () => {
   })
 
   it('purges the folded range only when explicitly asked', async () => {
-    const ledger = new UsageLedger({ dir })
+    const ledger = track(new UsageLedger({ dir }))
     await ledger.append(rec(new Date(2026, 9, 1, 12).toISOString(), 1))
     await ledger.append(rec(new Date(2026, 9, 2, 12).toISOString(), 2))
     const result = await ledger.compact('2026-10-01', '2026-10-01', true)
@@ -315,7 +325,7 @@ describe('UsageLedger', () => {
   })
 
   it('clear() removes the detail file and stays quiet when absent', async () => {
-    const ledger = new UsageLedger({ dir })
+    const ledger = track(new UsageLedger({ dir }))
     await ledger.append(rec('2026-10-02T01:00:00.000Z'))
     await ledger.clear()
     expect(await ledger.read()).toEqual([])
@@ -323,7 +333,7 @@ describe('UsageLedger', () => {
   })
 
   it('exposes the ledger file name for the CLI', async () => {
-    const ledger = new UsageLedger({ dir })
+    const ledger = track(new UsageLedger({ dir }))
     expect(ledger.path.endsWith('usage-ledger.ndjson')).toBe(true)
   })
 })

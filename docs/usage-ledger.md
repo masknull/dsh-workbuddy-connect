@@ -27,9 +27,14 @@
 
 | 文件 | 作用 |
 |---|---|
-| `src/usage-ledger.ts` | 记账核心：SSE 扫描、记录构造、NDJSON 追加、按日聚合、手动合并 |
-| `tests/usage-ledger.spec.ts` | 36 条单元测试（分片跨界、撕裂行、并发写、写盘失败降级…） |
+| `src/usage-ledger.ts` | 记账核心：SSE 扫描、记录构造、NDJSON 追加、按日聚合、手动合并、`idle()` |
+| `src/usage-paths.ts` | 两个用量端点的路径常量与浏览器端可见的文档类型 |
+| `src/usage-route.ts` | `GET /usage`（聚合）+ `POST /usage/maintenance`（合并/清除，需 in-process key） |
+| `src/client/UsageStatsPanel.tsx` | 卡片的「用量统计」页 |
+| `tests/usage-ledger.spec.ts` | 37 条单元测试（分片跨界、撕裂行、并发写、写盘失败降级…） |
 | `tests/shim-usage.spec.ts` | 10 条集成测试（真实往返落账、**转发字节不变**、无 usage 不落账…） |
+| `tests/usage-route.spec.ts` | 24 条路由测试（窗口、鉴权、Host 守卫、合并/清除语义…） |
+| `tests/usage-panel.spec.ts` | 20 条界面测试（算术、窗口切换、合同时序、无 key 禁用…） |
 | `docs/usage-ledger.md` | 本文件 |
 
 ## 改动文件
@@ -37,8 +42,28 @@
 | 文件 | 改动 |
 |---|---|
 | `src/shim.ts` | `WorkBuddyShimOptions` 增加可选的 `ledger` / `region`；在 `chatCompletions()` 的 `pipe` 前挂 tap |
+| `src/index.ts` | 建账本（按数据目录缓存，整个进程一份）、注册两个用量路由、导出账本 API |
+| `src/client/WorkBuddyPluginCard.tsx` | 标签栏加第 6 个「用量统计」并接到面板 |
+| `src/client/locales.ts` | 中英双份用量文案 |
+| `tsconfig.json` / `tsconfig.client.json` | 把 `tests/usage-panel.spec.ts` 归入 client 配置（与既有 client 测试同例） |
 
 **改动刻意保持最小**：`ledger` 不传时行为与上游完全一致（有测试守着这条）。
+
+## 两个端点
+
+```
+GET  /plugins/dsh-workbuddy-connect/usage
+     ?days=7 | ?from=YYYY-MM-DD&to=YYYY-MM-DD | 空 = 全部
+     → { days[], models[], totals, storage, window, key? }
+
+POST /plugins/dsh-workbuddy-connect/usage/maintenance
+     x-workbuddy-key: <随 GET 下发的 in-process key>
+     { action:'compact', from, to, purge?:false } | { action:'clear' }
+```
+
+读端点只需 loopback Host/Origin 守卫；**写端点额外要 in-process key**——因为
+「loopback 防的是 DNS-rebinding 页面」，那和「授权一次删除」不是同一件事。
+`purge` 默认 `false`：合并是**视图操作**，销毁原始数据绝不能是它的静默副作用。
 
 ## 记了哪些字段
 
@@ -94,7 +119,7 @@ $DSH_HOME/profiles/<profile>/.dsh-workbuddy-connect/
 
 ```bash
 pnpm install
-pnpm test          # 期望 34 → 36 个文件、427 → 473 条全绿
+pnpm test          # 期望 38 个文件、517 条全绿（上游 34/427 + 本分支 4 个新文件 90 条）
 pnpm run typecheck
 pnpm run build
 ```
@@ -102,8 +127,8 @@ pnpm run build
 真实数据验证（会消耗极少量积分）：
 
 ```bash
-# 在 DSH 里正常对话几次，然后
-node -e "…"   # 或直接用 UI 的「统计」页
+# 在 DSH 里正常对话几次，然后看卡片「用量统计」页，
+# 或直接读账本：
 cat $DSH_HOME/profiles/web/.dsh-workbuddy-connect/usage/usage-ledger.ndjson
 ```
 
@@ -114,9 +139,14 @@ cat $DSH_HOME/profiles/web/.dsh-workbuddy-connect/usage/usage-ledger.ndjson
 | 40,008 | 40,008 | 1 | **1.14** | 28.5 积分/1M |
 
 与本目录早先独立测得的「高峰 ×2 后 28.5 积分/1M」一致 —— 两条互相独立的路径得出同一费率。
+另一次经 shim 的真实往返（走完整记账路径）落账 `prompt 1008 = cacheHit 768 + cacheMiss 240`，
+拆分自洽、缓存命中 76%。
 
-## 尚未完成（后续提交）
+## 已记录的经验：一个被误判为"负载问题"的测试 flake
 
-- 宿主 HTTP 路由（`/usage/summary`、`/usage/records`）暴露给前端
-- 客户端的「统计」标签页（趋势条状图、按模型聚合、积分↔token↔人民币、手动合并入口）
-- README 中英双份的功能章节更新
+并行跑全量时随机出现 `EBUSY: resource busy or locked, rmdir '…\wb-usage-XXXX\usage'`，
+且会波及看似无关的测试文件（它们只是超时）。**根因不是负载**：账本内部有串行写入队列
+（`mkdir` + `appendFile` 串成 promise chain），测试清理删目录时队列仍在途，Windows 上该句柄锁住目录。
+
+修法是给账本加 `idle()`（循环 await 队列直到不再变化），**所有删目录的地方先 `await ledger.idle()`**。
+`idle()` 不只是测试便利：`compact()` 重写账本文件、profile 拆除时同样必须先排空队列。

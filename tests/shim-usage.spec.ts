@@ -50,7 +50,6 @@ interface Harness {
 
 async function start(streamText: string, opts: { withLedger?: boolean, region?: 'cn' | 'global' } = {}): Promise<Harness> {
   const dir = await mkdtemp(join(tmpdir(), 'wb-usage-'))
-  CLEANUP.push(async () => { await rm(dir, { recursive: true, force: true }) })
   const own = join(dir, 'own.json')
   await writeFile(own, JSON.stringify({
     version: 1,
@@ -59,6 +58,12 @@ async function start(streamText: string, opts: { withLedger?: boolean, region?: 
   }))
   const store = new WorkBuddyCredentialStore({ ownPath: own, refresh: async () => ({ accessToken: 'unused' }) })
   const ledger = new UsageLedger({ dir: join(dir, 'usage') })
+  // Drain the append queue before removing the directory: a pending write holds
+  // a handle on it, and deleting underneath the queue fails with EBUSY.
+  CLEANUP.push(async () => {
+    await ledger.idle()
+    await rm(dir, { recursive: true, force: true })
+  })
   const bodies: string[] = []
   const shim = createWorkBuddyShim({
     store,
@@ -186,7 +191,6 @@ describe('shim usage ledger', () => {
       },
     })
     const dir = await mkdtemp(join(tmpdir(), 'wb-usage-split-'))
-    CLEANUP.push(async () => { await rm(dir, { recursive: true, force: true }) })
     const own = join(dir, 'own.json')
     await writeFile(own, JSON.stringify({
       version: 1,
@@ -194,6 +198,10 @@ describe('shim usage ledger', () => {
       account: { uid: 'uid-9' },
     }))
     const ledger = new UsageLedger({ dir: join(dir, 'usage') })
+    CLEANUP.push(async () => {
+      await ledger.idle()
+      await rm(dir, { recursive: true, force: true })
+    })
     const shim = createWorkBuddyShim({
       store: new WorkBuddyCredentialStore({ ownPath: own, refresh: async () => ({ accessToken: 'x' }) }),
       catalog: new WorkBuddyCatalog(),

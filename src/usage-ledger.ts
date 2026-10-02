@@ -35,7 +35,7 @@
  */
 
 import { appendFile, mkdir, readFile, readdir, rename, stat, unlink, writeFile } from 'node:fs/promises'
-import { dirname, join } from 'node:path'
+import { join } from 'node:path'
 
 /** Which upstream account served a request. */
 export type LedgerRegion = 'cn' | 'global'
@@ -268,6 +268,23 @@ export class UsageLedger {
     return this.queue
   }
 
+  /**
+   * Wait for every queued write to settle.
+   *
+   * Callers that remove the ledger directory (tests, `compact`, a profile
+   * teardown) must await this first: a pending `mkdir`/`appendFile` holds a
+   * handle on the directory, and deleting it underneath the queue fails with
+   * `EBUSY` on Windows.
+   */
+  async idle(): Promise<void> {
+    // The queue may grow while we await it, so loop until it stops changing.
+    for (;;) {
+      const pending = this.queue
+      await pending
+      if (pending === this.queue) return
+    }
+  }
+
   /** Read every record; malformed lines are skipped, not fatal. */
   async read(): Promise<UsageRecord[]> {
     let raw: string
@@ -459,9 +476,4 @@ export function modelOf(bodyJson: string): string {
     // fall through
   }
   return 'unknown'
-}
-
-/** Resolve the ledger directory beside the plugin's other state files. */
-export function ledgerDir(stateDir: string): string {
-  return join(dirname(stateDir), 'usage')
 }

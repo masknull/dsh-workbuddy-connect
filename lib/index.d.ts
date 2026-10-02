@@ -1132,6 +1132,15 @@ declare class UsageLedger {
   stamp(): string;
   /** Append one record; resolves once it is on disk. Never throws. */
   append(record: UsageRecord): Promise<void>;
+  /**
+   * Wait for every queued write to settle.
+   *
+   * Callers that remove the ledger directory (tests, `compact`, a profile
+   * teardown) must await this first: a pending `mkdir`/`appendFile` holds a
+   * handle on the directory, and deleting it underneath the queue fails with
+   * `EBUSY` on Windows.
+   */
+  idle(): Promise<void>;
   /** Read every record; malformed lines are skipped, not fatal. */
   read(): Promise<UsageRecord[]>;
   /** Records within an inclusive local-day range (`from`/`to` as `YYYY-MM-DD`). */

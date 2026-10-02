@@ -7,6 +7,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-settings-plugins/client'
 import { WORKBUDDY_AI_LOGIN_PATH, WORKBUDDY_AI_PROBE_PATH, WORKBUDDY_AI_STATUS_PATH, WORKBUDDY_LOGIN_PATH, WORKBUDDY_PROBE_PATH, WORKBUDDY_STATUS_PATH } from '../status-paths.ts'
 import type { WorkBuddyWebModelBadge, WorkBuddyWebProbeSection, WorkBuddyWebStatus } from '../status-paths.ts'
 import { isWorkBuddyWebStatus } from './status-document.ts'
+import { UsageStatsPanel } from './UsageStatsPanel.tsx'
 import type { WorkBuddySettingsKey } from './locales.ts'
 import { QuotaSettingsContent } from './QuotaSettingsCard.tsx'
 import type { QuotaSection } from './QuotaSettingsCard.tsx'
@@ -1139,7 +1140,7 @@ export function WorkBuddyPluginCard(props: WorkBuddyPluginCardProps) {
   // carries; the two reference sets — context capacity, then rates and the
   // per-package breakdown — are deliberate visits, since neither changes while
   // you watch.
-  const [tab, setTab] = useState<'status' | 'context' | 'models' | 'details' | 'checkin'>('status')
+  const [tab, setTab] = useState<'status' | 'context' | 'models' | 'details' | 'usage' | 'checkin'>('status')
   const [checkingIn, setCheckingIn] = useState(false)
   const [clearingLogs, setClearingLogs] = useState(false)
   const [checkInNotice, setCheckInNotice] = useState<string>()
@@ -1896,7 +1897,7 @@ export function WorkBuddyPluginCard(props: WorkBuddyPluginCardProps) {
                     * decision-relevant.
                     */}
                   <div role="tablist" style={tabBarStyle}>
-                    {(['status', 'context', 'models', 'details', 'checkin'] as const).map(id => (
+                    {(['status', 'context', 'models', 'details', 'usage', 'checkin'] as const).map(id => (
                       <button
                         key={id}
                         type="button"
@@ -1905,7 +1906,7 @@ export function WorkBuddyPluginCard(props: WorkBuddyPluginCardProps) {
                         onClick={() => { setTab(id) }}
                         style={{ ...tabStyle, ...(tab === id ? tabActiveStyle : {}) }}
                       >
-                        {t(id === 'status' ? 'tabStatus' : id === 'context' ? 'tabContext' : id === 'models' ? 'tabModels' : id === 'details' ? 'tabDetails' : 'tabCheckIn')}
+                        {t(id === 'status' ? 'tabStatus' : id === 'context' ? 'tabContext' : id === 'models' ? 'tabModels' : id === 'details' ? 'tabDetails' : id === 'usage' ? 'tabUsage' : 'tabCheckIn')}
                       </button>
                     ))}
                   </div>
@@ -2000,6 +2001,8 @@ export function WorkBuddyPluginCard(props: WorkBuddyPluginCardProps) {
                         </div>
                       )}
                     </div>
+                  ) : tab === 'usage' ? (
+                    <UsageStatsPanel t={t} open={tab === 'usage'} />
                   ) : (
                     <div style={tabPanelStyle}>
                       <CheckInLogTable
