@@ -22,6 +22,7 @@ import type { WorkBuddyCredentialStore } from './auth.ts'
 import type { WorkBuddyCatalog } from './catalog.ts'
 import { hostIsLoopback, originIsLoopback } from './loopback.ts'
 import { prepareChatBody, WorkBuddyUpstreamClient, type UpstreamErrorKind } from './upstream.ts'
+import { createUsageTap, modelOf, type LedgerRegion, type UsageLedger } from './usage-ledger.ts'
 
 /** Minimal logger surface the plugin context already provides. */
 export interface ShimLogger {
@@ -52,6 +53,18 @@ export interface WorkBuddyShimOptions {
   client: Pick<WorkBuddyUpstreamClient, 'chatStream'>
   catalog: WorkBuddyCatalog
   logger?: ShimLogger
+  /**
+   * Optional per-request usage ledger.
+   *
+   * The SSE stream that leaves this shim is the only place in the stack where
+   * both the exact token split and the upstream's billed `credit` are visible
+   * (pi-ai drops `credit` while normalising usage, and sessions persist no
+   * usage at all). When supplied, every completed chat request appends one
+   * record. Absent, the shim behaves exactly as before.
+   */
+  ledger?: UsageLedger
+  /** Which upstream account this shim serves, recorded on every ledger row. */
+  region?: LedgerRegion
 }
 
 const REQUEST_BODY_LIMIT = 64 * 1024 * 1024
@@ -233,15 +246,43 @@ export function createWorkBuddyShim(options: WorkBuddyShimOptions): WorkBuddyShi
       'Connection': 'keep-alive',
       'X-Accel-Buffering': 'no',
     })
+    // Statistics tap: scan a copy of each forwarded chunk for the usage chunk.
+    // The forwarded bytes are never rewritten, so a ledger failure cannot
+    // corrupt the stream pi-ai is reading.
+    const ledger = options.ledger
+    const tap = ledger === undefined
+      ? undefined
+      : createUsageTap({
+        startedAt: Date.now(),
+        now: () => new Date(),
+        region: options.region ?? 'cn',
+        uid: credential.uid ?? '',
+        model: modelOf(prepared),
+      })
     let sawDone = false
     const body = Readable.fromWeb(result.response.body as Parameters<typeof Readable.fromWeb>[0])
     body.on('data', (chunk: Buffer) => {
       if (chunk.includes('[DONE]')) sawDone = true
+      tap?.push(chunk)
     })
     body.on('error', (error: unknown) => {
       logger?.warn('dsh-workbuddy-connect: upstream stream failed mid-flight', error)
+      tap?.abort()
       if (!sawDone && res.writable) res.end('data: [DONE]\n\n')
     })
+    // Record once the stream has fully drained, so `done` and the duration are
+    // both final. `close` also fires on a client abort, hence the abort() guard.
+    if (tap !== undefined && ledger !== undefined) {
+      const settle = (): void => {
+        const record = tap.finish()
+        if (record !== undefined) void ledger.append(record)
+      }
+      body.on('end', settle)
+      res.on('close', () => {
+        if (!res.writableEnded) tap.abort()
+        settle()
+      })
+    }
     body.pipe(res)
   }
 

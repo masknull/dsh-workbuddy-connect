@@ -989,6 +989,209 @@ declare class WorkBuddyProbeStore {
   private persist;
 }
 //#endregion
+//#region src/usage-ledger.d.ts
+/**
+ * Per-request usage ledger for the WorkBuddy upstream.
+ *
+ * ## Why this module exists
+ *
+ * The upstream SSE stream carries a final chunk whose `usage` object holds both
+ * the exact token split (`prompt_cache_hit_tokens` / `prompt_cache_miss_tokens`
+ * / `completion_tokens`) and the account's **real** billed `credit`. That is the
+ * only place in the whole stack where both are visible at once:
+ *
+ * - pi-ai parses the stream but keeps only normalised `input`/`output`/`cacheRead`
+ *   and **drops `credit`**, so DSH sessions never see the billed value;
+ * - DSH session files do not persist usage at all;
+ * - the web console only offers a 3000-row export, capped and range-cached.
+ *
+ * Recording here therefore yields *measured* numbers rather than a conversion.
+ *
+ * ## Two facts that shape the design
+ *
+ * 1. `credit` is rounded to 2 decimals by the upstream, so a small request bills
+ *    `0`. Summing per-request credits therefore *under*-reports; the ledger keeps
+ *    the exact token counters alongside so token totals stay exact and credit can
+ *    be reconciled against a balance reading.
+ * 2. The same response is only ever written once per completed request, and the
+ *    upstream may stream for minutes, so records are appended on stream end.
+ *
+ * ## Storage
+ *
+ * Newline-delimited JSON, one record per request, appended atomically per line
+ * (`O_APPEND` semantics via a serialised write queue). Records are **never**
+ * removed automatically — compaction happens only when a human selects a date
+ * range in the UI, and even then the raw detail is kept unless explicitly purged.
+ *
+ * @module dsh-workbuddy-connect/usage-ledger
+ */
+/** Which upstream account served a request. */
+type LedgerRegion = 'cn' | 'global';
+/** One completed chat request, as observed at the shim boundary. */
+interface UsageRecord {
+  /** ISO-8601 instant the request completed. */
+  at: string;
+  /** Upstream account the request was billed to. */
+  region: LedgerRegion;
+  /** Account uid, so multiple sign-ins stay distinguishable. */
+  uid: string;
+  /** Model id exactly as sent upstream. */
+  model: string;
+  /** Total prompt tokens as reported upstream. */
+  prompt: number;
+  /** Prompt tokens served from cache (billed far cheaper). */
+  cacheHit: number;
+  /** Prompt tokens that missed cache (billed at full rate). */
+  cacheMiss: number;
+  /** Generated tokens, reasoning included (upstream already counts it in). */
+  completion: number;
+  /** Reasoning tokens, when the upstream reports them separately. */
+  reasoning: number;
+  /** Billed credits for this single request, upstream's own number (2 dp). */
+  credit: number;
+  /** Wall-clock duration of the stream, milliseconds. */
+  ms: number;
+  /** Whether the request completed with a `[DONE]` sentinel. */
+  done: boolean;
+}
+/** Aggregate over a set of records. */
+interface UsageTotals {
+  requests: number;
+  prompt: number;
+  cacheHit: number;
+  cacheMiss: number;
+  completion: number;
+  reasoning: number;
+  credit: number;
+}
+/** One day of aggregates, as served to the UI. */
+interface UsageDay extends UsageTotals {
+  /** Local calendar day, `YYYY-MM-DD`. */
+  day: string;
+}
+/** Sum a list of records. */
+declare function sumRecords(records: readonly UsageRecord[]): UsageTotals;
+/** Local calendar day (`YYYY-MM-DD`) for an ISO instant, in the host's zone. */
+declare function localDay(iso: string): string;
+/**
+ * Extract the usage-bearing chunk from a raw SSE text fragment.
+ *
+ * The upstream emits one chunk carrying `usage` (with the billed `credit`)
+ * immediately before `[DONE]`. Fragments arrive split across TCP reads, so the
+ * caller feeds arbitrary text and this returns whatever complete `data:` lines
+ * it can parse; `rest` carries the trailing partial line forward.
+ */
+interface SseScan {
+  /** Usage objects found in this fragment, in order. */
+  usages: Record<string, unknown>[];
+  /** Whether a `[DONE]` sentinel was seen. */
+  done: boolean;
+  /** Incomplete trailing line to prepend to the next fragment. */
+  rest: string;
+}
+/** Parse the `data:` lines of one SSE fragment without retaining content. */
+declare function scanSse(fragment: string, carry?: string): SseScan;
+/** Build a record from the last usage object a stream produced. */
+declare function recordFrom(usage: Record<string, unknown>, context: {
+  at: string;
+  region: LedgerRegion;
+  uid: string;
+  model: string;
+  ms: number;
+  done: boolean;
+}): UsageRecord;
+/** Options for {@link UsageLedger}. */
+interface UsageLedgerOptions {
+  /** Directory the ledger files live in (the plugin's `state/` dir). */
+  dir: string;
+  /** Clock injection for tests. */
+  now?: () => Date;
+  /** Sink for ledger failures; a full disk must not break chat. */
+  onError?: (error: unknown) => void;
+}
+/**
+ * Append-only usage ledger.
+ *
+ * Every write is serialised through one promise chain, so concurrent requests
+ * cannot interleave partial lines. Failures are reported to `onError` and
+ * swallowed: losing a statistics line must never fail a chat request.
+ */
+declare class UsageLedger {
+  private readonly dir;
+  private readonly file;
+  private readonly now;
+  private readonly onError;
+  private queue;
+  private ready;
+  constructor(options: UsageLedgerOptions);
+  /** Path of the detail file. */
+  get path(): string;
+  /** Ensure the directory exists exactly once. */
+  private ensure;
+  /** Timestamp the ledger stamps records with. */
+  stamp(): string;
+  /** Append one record; resolves once it is on disk. Never throws. */
+  append(record: UsageRecord): Promise<void>;
+  /**
+   * Wait for every queued write to settle.
+   *
+   * Callers that remove the ledger directory (tests, `compact`, a profile
+   * teardown) must await this first: a pending `mkdir`/`appendFile` holds a
+   * handle on the directory, and deleting it underneath the queue fails with
+   * `EBUSY` on Windows.
+   */
+  idle(): Promise<void>;
+  /** Read every record; malformed lines are skipped, not fatal. */
+  read(): Promise<UsageRecord[]>;
+  /** Records within an inclusive local-day range (`from`/`to` as `YYYY-MM-DD`). */
+  between(from: string, to: string): Promise<UsageRecord[]>;
+  /** Per-day aggregates across every stored record. */
+  daily(): Promise<UsageDay[]>;
+  /** Size of the detail file in bytes, for the UI's storage readout. */
+  size(): Promise<number>;
+  /**
+   * Fold a day range into one summary record and drop the detail lines it
+   * covers. Only ever called from an explicit human action; the summary is
+   * written to a sibling file so the purge is auditable.
+   */
+  compact(from: string, to: string, purge: boolean): Promise<{
+    folded: UsageTotals;
+    purged: boolean;
+  }>;
+  /** Stored rollups, newest last. */
+  rollups(): Promise<unknown[]>;
+  /** Delete the detail file (explicit purge only). */
+  clear(): Promise<void>;
+  /** Directory listing helper used by tests and the CLI. */
+  static files(dir: string): Promise<string[]>;
+}
+/**
+ * Wrap an SSE byte stream so it is both forwarded untouched and scanned for the
+ * billing figures.
+ *
+ * Returns the same chunk stream the caller would have piped, plus a promise that
+ * resolves with the record once the stream ends. Reading is done on a *clone* of
+ * each chunk, so the forwarded bytes are byte-identical to the upstream's.
+ */
+interface UsageTap {
+  /** Digest one forwarded chunk; returns nothing, retains only counters. */
+  push(chunk: Buffer): void;
+  /** Note that the downstream gave up (client abort). */
+  abort(): void;
+  /** Finish and produce the record if any usage was seen. */
+  finish(): UsageRecord | undefined;
+}
+/** Create a tap that accumulates usage across one SSE stream. */
+declare function createUsageTap(context: {
+  startedAt: number;
+  now: () => Date;
+  region: LedgerRegion;
+  uid: string;
+  model: string;
+}): UsageTap;
+/** Extract the upstream `model` string from a prepared chat body, if present. */
+declare function modelOf(bodyJson: string): string;
+//#endregion
 //#region src/shim.d.ts
 /** Minimal logger surface the plugin context already provides. */
 interface ShimLogger {
@@ -1017,6 +1220,18 @@ interface WorkBuddyShimOptions {
   client: Pick<WorkBuddyUpstreamClient, 'chatStream'>;
   catalog: WorkBuddyCatalog;
   logger?: ShimLogger;
+  /**
+   * Optional per-request usage ledger.
+   *
+   * The SSE stream that leaves this shim is the only place in the stack where
+   * both the exact token split and the upstream's billed `credit` are visible
+   * (pi-ai drops `credit` while normalising usage, and sessions persist no
+   * usage at all). When supplied, every completed chat request appends one
+   * record. Absent, the shim behaves exactly as before.
+   */
+  ledger?: UsageLedger;
+  /** Which upstream account this shim serves, recorded on every ledger row. */
+  region?: LedgerRegion;
 }
 /**
  * Start the loopback endpoint. Requests carry any bearer; the loopback bind
@@ -1546,4 +1761,4 @@ declare const QUOTA_SECTION_KEYS: readonly ["sidebarQuotaCN", "sidebarQuotaAI", 
  */
 declare function apply(ctx: Context, config: Config): void;
 //#endregion
-export { AI_SECTION_KEYS, AI_VARIANT, type AppVersionInfo, CN_APP_VERSION_FILENAME, CN_SECTION_KEYS, CN_VARIANT, type ChatIdentity, Config, FALLBACK_CN_APP_VERSION, FALLBACK_WORKBUDDY_AI_MODELS, FALLBACK_WORKBUDDY_MODELS, LOGIN_PENDING_CODE, PROBE_EFFORT_CANDIDATES, type ProbeAttempt, type ProbeOutcome, type ProbeSender, QUOTA_POLL_DEFAULT_MS, QUOTA_POLL_MIN_MS, QUOTA_SECTION_KEYS, type ResolveChatIdentityOptions, type UpstreamErrorKind, WORKBUDDY_AI_LOGIN_PATH, WORKBUDDY_AI_SETTINGS_NS, WORKBUDDY_APP_VERSION_FILENAME, WORKBUDDY_AUTH_FILENAME, WORKBUDDY_CATALOG_FILENAME, WORKBUDDY_CREDENTIAL_SOURCE, WORKBUDDY_DATA_DIR_ENV, WORKBUDDY_DATA_DIR_NAME, WORKBUDDY_HOST_HEARTBEAT_FILENAME, WORKBUDDY_LOGIN_PATH, WORKBUDDY_PROBE_FILENAME, WORKBUDDY_PROVIDER, WORKBUDDY_QUOTA_SETTINGS_NS, WORKBUDDY_SETTINGS_FACE_PATH, WORKBUDDY_SETTINGS_NS, WORKBUDDY_STREAM_IDLE_TIMEOUT_MS, WORKBUDDY_VARIANTS, type WorkBuddyAdapter, type WorkBuddyAppVersionSource, type WorkBuddyAuthStatus, WorkBuddyCatalog, type WorkBuddyCatalogFetch, WorkBuddyCatalogStore, type WorkBuddyChatResult, type WorkBuddyCredential, WorkBuddyCredentialStore, type WorkBuddyCredits, type WorkBuddyEffort, type WorkBuddyHostHeartbeat, type WorkBuddyLoginAccount, type WorkBuddyLoginAttempt, WorkBuddyLoginClient, type WorkBuddyLoginPoll, type WorkBuddyLoginRouteOptions, type WorkBuddyLoginTokens, type WorkBuddyModelBilling, type WorkBuddyModelInfo, type WorkBuddyModelReasoning, type WorkBuddyProbeRecord, WorkBuddyProbeService, type WorkBuddyProbeStatus, WorkBuddyProbeStore, type WorkBuddyProbeValidation, type WorkBuddyPromotion, type WorkBuddyRefreshOutcome, type WorkBuddyShim, WorkBuddyUpstreamClient, type WorkBuddyUpstreamModel, type WorkBuddyVariant, type WorkBuddyWebLoginAction, type WorkBuddyWebLoginRequest, type WorkBuddyWebLoginResult, appUserAgent, apply, chatUserAgent, classifyUpstreamError, clearHostHeartbeat, createLoginKey, createWorkBuddyAdapter, createWorkBuddyShim, fallbackChatIdentity, fingerprintModel, inject, installedAppVersion, isHeartbeatProcessAlive, modelWithCurrentPromotion, name, normalizeCredits, normalizeLoginRegion, parseModelCatalog, parseWorkBuddyAuth, prepareChatBody, prepareInternationalChatBody, probeModel, processStartTimeMs, randomSentinel, readBundleVersion, readCliVersion, readHostHeartbeat, regionOf, registerWorkBuddyLoginRoute, resolveAppVersion, resolveChatIdentity, resolveLoginRegion, validAppVersion, validCliVersion, variantFor, workBuddyLoginHandler, workbuddyCatalogPath, workbuddyHostHeartbeatPath, workbuddyOwnAuthPath, workbuddyPluginDataDir, workbuddyProbePath };
+export { AI_SECTION_KEYS, AI_VARIANT, type AppVersionInfo, CN_APP_VERSION_FILENAME, CN_SECTION_KEYS, CN_VARIANT, type ChatIdentity, Config, FALLBACK_CN_APP_VERSION, FALLBACK_WORKBUDDY_AI_MODELS, FALLBACK_WORKBUDDY_MODELS, LOGIN_PENDING_CODE, type LedgerRegion, PROBE_EFFORT_CANDIDATES, type ProbeAttempt, type ProbeOutcome, type ProbeSender, QUOTA_POLL_DEFAULT_MS, QUOTA_POLL_MIN_MS, QUOTA_SECTION_KEYS, type ResolveChatIdentityOptions, type UpstreamErrorKind, type UsageDay, UsageLedger, type UsageRecord, type UsageTap, type UsageTotals, WORKBUDDY_AI_LOGIN_PATH, WORKBUDDY_AI_SETTINGS_NS, WORKBUDDY_APP_VERSION_FILENAME, WORKBUDDY_AUTH_FILENAME, WORKBUDDY_CATALOG_FILENAME, WORKBUDDY_CREDENTIAL_SOURCE, WORKBUDDY_DATA_DIR_ENV, WORKBUDDY_DATA_DIR_NAME, WORKBUDDY_HOST_HEARTBEAT_FILENAME, WORKBUDDY_LOGIN_PATH, WORKBUDDY_PROBE_FILENAME, WORKBUDDY_PROVIDER, WORKBUDDY_QUOTA_SETTINGS_NS, WORKBUDDY_SETTINGS_FACE_PATH, WORKBUDDY_SETTINGS_NS, WORKBUDDY_STREAM_IDLE_TIMEOUT_MS, WORKBUDDY_VARIANTS, type WorkBuddyAdapter, type WorkBuddyAppVersionSource, type WorkBuddyAuthStatus, WorkBuddyCatalog, type WorkBuddyCatalogFetch, WorkBuddyCatalogStore, type WorkBuddyChatResult, type WorkBuddyCredential, WorkBuddyCredentialStore, type WorkBuddyCredits, type WorkBuddyEffort, type WorkBuddyHostHeartbeat, type WorkBuddyLoginAccount, type WorkBuddyLoginAttempt, WorkBuddyLoginClient, type WorkBuddyLoginPoll, type WorkBuddyLoginRouteOptions, type WorkBuddyLoginTokens, type WorkBuddyModelBilling, type WorkBuddyModelInfo, type WorkBuddyModelReasoning, type WorkBuddyProbeRecord, WorkBuddyProbeService, type WorkBuddyProbeStatus, WorkBuddyProbeStore, type WorkBuddyProbeValidation, type WorkBuddyPromotion, type WorkBuddyRefreshOutcome, type WorkBuddyShim, WorkBuddyUpstreamClient, type WorkBuddyUpstreamModel, type WorkBuddyVariant, type WorkBuddyWebLoginAction, type WorkBuddyWebLoginRequest, type WorkBuddyWebLoginResult, appUserAgent, apply, chatUserAgent, classifyUpstreamError, clearHostHeartbeat, createLoginKey, createUsageTap, createWorkBuddyAdapter, createWorkBuddyShim, fallbackChatIdentity, fingerprintModel, inject, installedAppVersion, isHeartbeatProcessAlive, localDay, modelOf, modelWithCurrentPromotion, name, normalizeCredits, normalizeLoginRegion, parseModelCatalog, parseWorkBuddyAuth, prepareChatBody, prepareInternationalChatBody, probeModel, processStartTimeMs, randomSentinel, readBundleVersion, readCliVersion, readHostHeartbeat, recordFrom, regionOf, registerWorkBuddyLoginRoute, resolveAppVersion, resolveChatIdentity, resolveLoginRegion, scanSse, sumRecords, validAppVersion, validCliVersion, variantFor, workBuddyLoginHandler, workbuddyCatalogPath, workbuddyHostHeartbeatPath, workbuddyOwnAuthPath, workbuddyPluginDataDir, workbuddyProbePath };
